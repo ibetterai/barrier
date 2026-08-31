@@ -226,6 +226,12 @@ App::handleIpcMessage(const Event& e, void*)
         LOG((CLOG_INFO "got ipc shutdown message"));
         m_events->addEvent(Event(Event::kQuit));
     }
+    else if (m->type() == kIpcReload) {
+        LOG((CLOG_INFO "got ipc configuration reload message"));
+        m_events->addEvent(Event(
+            m_events->forServerApp().reloadConfig(),
+            m_events->getSystemTarget()));
+    }
 }
 
 void App::run_events_loop()

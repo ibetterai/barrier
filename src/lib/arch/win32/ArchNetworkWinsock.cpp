@@ -21,6 +21,7 @@
 #include "arch/win32/XArchWindows.h"
 #include "arch/IArchMultithread.h"
 #include "arch/Arch.h"
+#include "arch/NetworkAddressSelection.h"
 
 #include <malloc.h>
 
@@ -719,32 +720,38 @@ ArchNetworkWinsock::copyAddr(ArchNetAddress addr)
 ArchNetAddress
 ArchNetworkWinsock::nameToAddr(const std::string& name)
 {
-    // allocate address
-
-    ArchNetAddressImpl* addr = new ArchNetAddressImpl;
-
     struct addrinfo hints;
-    struct addrinfo *p;
+    struct addrinfo *addresses = nullptr;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
     int ret = -1;
 
     ARCH->lockMutex(m_mutex);
-    if ((ret = getaddrinfo(name.c_str(), NULL, &hints, &p)) != 0) {
+    if ((ret = getaddrinfo(
+            name.c_str(), NULL, &hints, &addresses)) != 0) {
         ARCH->unlockMutex(m_mutex);
-        delete addr;
         throwNameError(ret);
     }
 
-    if (p->ai_family == AF_INET) {
-        addr->m_len = (socklen_t)sizeof(struct sockaddr_in);
-    } else {
-        addr->m_len = (socklen_t)sizeof(struct sockaddr_in6);
+    const struct addrinfo* selected =
+        barrier::selectPreferredAddressInfo(addresses);
+    struct sockaddr_storage selectedAddress;
+    int selectedLength = 0;
+    if (selected != nullptr) {
+        selectedLength = static_cast<int>(selected->ai_addrlen);
+        memcpy(&selectedAddress, selected->ai_addr, selectedLength);
     }
-
-    memcpy(&addr->m_addr, p->ai_addr, addr->m_len);
-    freeaddrinfo(p);
+    freeaddrinfo(addresses);
     ARCH->unlockMutex(m_mutex);
+
+    if (selectedLength == 0) {
+        throw XArchNetworkNameUnsupported(
+            "The named host has no supported routable address");
+    }
+    ArchNetAddressImpl* addr = ArchNetAddressImpl::alloc(selectedLength);
+    memcpy(&addr->m_addr, &selectedAddress, selectedLength);
     return addr;
 }
 

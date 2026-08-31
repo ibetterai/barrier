@@ -1,0 +1,99 @@
+name: ci-local
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify hosted Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Install build dependencies
+        run: brew install pkg-config qt@5 openssl@3
+
+      - name: Configure arm64 Release build
+        run: |
+          cmake -S . -B build-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DBARRIER_MACOS_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_OSX_SYSROOT=macosx \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DBARRIER_BUILD_TESTS=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Test macOS release verifier
+        run: |
+          scripts/tests/scan-protected-metadata_test.sh
+          scripts/tests/build-macos-release-prefix_diagnostics_test.sh
+          scripts/tests/verify-macos-deployment-target_test.sh
+          scripts/tests/public-audit_test.sh
+
+      - name: Build complete product and tests
+        run: cmake --build build-ci --parallel 3
+
+      - name: Verify app architecture and version
+        run: |
+          test "$(lipo -archs build-ci/bundle/Barrier.app/Contents/MacOS/barrier)" = arm64
+          version="$(build-ci/bin/barriers --version | head -1)"
+          grep -Eq '^barriers [0-9]+\.[0-9]+\.[0-9]+-release$' <<<"$version"
+          bundle_version="${version#barriers }"
+          bundle_version="${bundle_version%-release}"
+          plist=build-ci/bundle/Barrier.app/Contents/Info.plist
+          test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$bundle_version"
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$bundle_version"
+          test "$(plutil -extract LSMinimumSystemVersion raw "$plist")" = 11.0
+          vtool -show-build build-ci/bundle/Barrier.app/Contents/MacOS/barrier | grep -Eq 'minos 11\.0'
+
+      - name: Run core unit tests
+        run: build-ci/bin/unittests
+
+      - name: Run GUI unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: build-ci/bin/guiunittests
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v8.30.1 \
+            --repo gitleaks/gitleaks \
+            --pattern 'gitleaks_8.30.1_linux_x64.tar.gz' \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+
+      - name: Scan repository history
+        run: |
+          config=()
+          if [ -f .gitleaks.toml ]; then
+            config=(--config .gitleaks.toml)
+          fi
+          "$RUNNER_TEMP/gitleaks" detect \
+            --source . \
+            "${config[@]}" \
+            --redact \
+            --no-banner \
+            --exit-code 1

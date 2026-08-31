@@ -21,6 +21,7 @@
 #include "net/NetworkAddress.h"
 #include "net/TCPSocket.h"
 #include "base/EventTypes.h"
+#include "ipc/Ipc.h"
 
 class IpcServerProxy;
 class IpcMessage;
@@ -33,8 +34,10 @@ class SocketMultiplexer;
  */
 class IpcClient {
 public:
-    IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer);
-    IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer, int port);
+    IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer,
+              EIpcClientType clientType = kIpcClientNode);
+    IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer,
+              int port, EIpcClientType clientType = kIpcClientNode);
     virtual ~IpcClient();
 
     //! @name manipulators
@@ -60,5 +63,6 @@ private:
     NetworkAddress        m_serverAddress;
     TCPSocket            m_socket;
     IpcServerProxy*    m_server;
+    EIpcClientType m_clientType;
     IEventQueue*        m_events;
 };

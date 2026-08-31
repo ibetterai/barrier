@@ -124,6 +124,12 @@ PrimaryClient::getDisplays(std::vector<ScreenRect>& displays) const
 {
     m_screen->getDisplays(displays);
 }
+barrier::DisplayTopology
+PrimaryClient::getDisplayTopology() const
+{
+    return m_screen->getDisplayTopology();
+}
+
 
 void
 PrimaryClient::getDisplayNames(std::vector<std::string>& names) const

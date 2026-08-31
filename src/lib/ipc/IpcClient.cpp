@@ -26,19 +26,26 @@
 // IpcClient
 //
 
-IpcClient::IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer) :
+IpcClient::IpcClient(IEventQueue* events,
+                     SocketMultiplexer* socketMultiplexer,
+                     EIpcClientType clientType) :
     m_serverAddress(NetworkAddress(IPC_HOST, IPC_PORT)),
     m_socket(events, socketMultiplexer, IArchNetwork::kINET),
     m_server(nullptr),
+    m_clientType(clientType),
     m_events(events)
 {
     init();
 }
 
-IpcClient::IpcClient(IEventQueue* events, SocketMultiplexer* socketMultiplexer, int port) :
+IpcClient::IpcClient(IEventQueue* events,
+                     SocketMultiplexer* socketMultiplexer,
+                     int port,
+                     EIpcClientType clientType) :
     m_serverAddress(NetworkAddress(IPC_HOST, port)),
     m_socket(events, socketMultiplexer, IArchNetwork::kINET),
     m_server(nullptr),
+    m_clientType(clientType),
     m_events(events)
 {
     init();
@@ -95,7 +102,7 @@ IpcClient::handleConnected(const Event&, void*)
     m_events->addEvent(Event(
         m_events->forIpcClient().connected(), this, m_server, Event::kDontFreeData));
 
-    IpcHelloMessage message(kIpcClientNode);
+    IpcHelloMessage message(m_clientType);
     send(message);
 }
 

@@ -38,7 +38,12 @@ public:
     ~PrimaryClient();
 
 #ifdef BARRIER_TEST_ENV
-    PrimaryClient() : BaseClientProxy("") { }
+    explicit PrimaryClient(const std::string& name = std::string()) :
+        BaseClientProxy(name),
+        m_screen(nullptr),
+        m_fakeInputCount(0)
+    {
+    }
 #endif
 
     //! @name manipulators
@@ -87,7 +92,7 @@ public:
     Return the jump zone size, the size of the regions on the edges of
     the screen that cause the cursor to jump to another screen.
     */
-    SInt32                getJumpZoneSize() const;
+    virtual SInt32        getJumpZoneSize() const;
 
     //! Get cursor center position
     /*!
@@ -95,7 +100,7 @@ public:
     cursor to compute cursor motion deltas and should be far from
     the edges of the screen, typically the center.
     */
-    void                getCursorCenter(SInt32& x, SInt32& y) const;
+    virtual void        getCursorCenter(SInt32& x, SInt32& y) const;
 
     //! Get toggle key state
     /*!
@@ -108,7 +113,7 @@ public:
     /*!
     Returns true if the user is locked to the screen.
     */
-    bool                isLockedToScreen() const;
+    virtual bool        isLockedToScreen() const;
 
     //@}
 
@@ -122,6 +127,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual barrier::DisplayTopology getDisplayTopology() const;
     virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 

@@ -18,7 +18,6 @@
 
 #include "ServerConfig.h"
 #include "Hotkey.h"
-#include "MainWindow.h"
 #include "AddClientDialog.h"
 #include "FreeformLayoutSettings.h"
 #include "barrier/DisplayGeometry.h"
@@ -27,6 +26,9 @@
 #include <QMessageBox>
 #include <QAbstractButton>
 #include <QPushButton>
+#include <QWidget>
+#include <memory>
+#include <stdexcept>
 
 static const struct
 {
@@ -44,8 +46,57 @@ static const struct
 
 const int serverDefaultIndex = 7;
 
+namespace {
+
+bool isAcceptedServerConfigKey(const QString& key)
+{
+    return key.startsWith(QStringLiteral("internalConfig/")) ||
+           key == QStringLiteral("topologyProfiles/payload") ||
+           key.startsWith(QStringLiteral("topologyProfiles.pending/"));
+}
+
+QMap<QString, QVariant> acceptedServerConfigSnapshot(QSettings& settings)
+{
+    QMap<QString, QVariant> snapshot;
+    const QStringList keys = settings.allKeys();
+    for (const QString& key : keys) {
+        if (isAcceptedServerConfigKey(key)) {
+            snapshot.insert(key, settings.value(key));
+        }
+    }
+    return snapshot;
+}
+
+std::unique_ptr<QSettings> freshSettingsHandle(const QSettings& source)
+{
+    if (!source.organizationName().isEmpty() ||
+        !source.applicationName().isEmpty()) {
+        return std::unique_ptr<QSettings>(new QSettings(
+            source.format(), source.scope(), source.organizationName(),
+            source.applicationName()));
+    }
+    return std::unique_ptr<QSettings>(
+        new QSettings(source.fileName(), source.format()));
+}
+
+bool restoreAcceptedServerConfigSnapshot(
+    QSettings& settings, const QMap<QString, QVariant>& snapshot)
+{
+    settings.remove(QStringLiteral("internalConfig"));
+    settings.remove(QStringLiteral("topologyProfiles"));
+    settings.remove(QStringLiteral("topologyProfiles.pending"));
+    for (QMap<QString, QVariant>::const_iterator saved = snapshot.begin();
+         saved != snapshot.end(); ++saved) {
+        settings.setValue(saved.key(), saved.value());
+    }
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+} // namespace
+
 ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
-                QString serverName, MainWindow* mainWindow) :
+                QString serverName, QWidget* mainWindow) :
     m_pSettings(settings),
     m_Screens(),
     m_NumColumns(numColumns),
@@ -63,7 +114,12 @@ ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
 
 ServerConfig::~ServerConfig()
 {
-    saveSettings();
+    if (m_persistSettings) {
+        QString error;
+        if (!saveSettings(&error)) {
+            qWarning() << "Could not save server configuration:" << error;
+        }
+    }
 }
 
 void ServerConfig::setFreeformPosition(const QString& name, int x, int y)
@@ -116,6 +172,164 @@ void ServerConfig::clearFreeformPositions()
     m_freeformPositions.clear();
 }
 
+void ServerConfig::setCurrentTopology(const barrier::DisplayTopology& topology)
+{
+    barrier::DisplayTopology normalized;
+    try {
+        normalized = topology.normalized();
+    }
+    catch (const std::invalid_argument&) {
+        clearCurrentTopology();
+        return;
+    }
+    if (normalized.empty()) {
+        clearCurrentTopology();
+        return;
+    }
+
+    const barrier::TopologyProfileSelection selection =
+        barrier::selectTopologyProfile(
+            m_topologyProfiles, normalized, m_ServerName,
+            m_legacyFreeformPositions, m_legacyFreeformDisplayRects);
+    m_currentTopology = normalized;
+    m_hasCurrentTopology = true;
+    m_freeformPositions = selection.positions;
+    m_freeformDisplayRects = selection.displayRects;
+}
+
+void ServerConfig::clearCurrentTopology()
+{
+    m_currentTopology = barrier::DisplayTopology();
+    m_hasCurrentTopology = false;
+    m_freeformPositions = m_legacyFreeformPositions;
+    m_freeformDisplayRects = m_legacyFreeformDisplayRects;
+}
+
+bool ServerConfig::isCurrentTopologyKnown() const
+{
+    return m_hasCurrentTopology &&
+           m_topologyProfiles.count(m_currentTopology.profileKey()) != 0;
+}
+
+QList<QRect> ServerConfig::currentServerDisplayRects() const
+{
+    if (!m_hasCurrentTopology) {
+        return QList<QRect>();
+    }
+    const barrier::TopologyProfileSelection selection =
+        barrier::selectTopologyProfile(
+            barrier::TopologyProfiles(), m_currentTopology, m_ServerName,
+            barrier::FreeformPositions(), barrier::FreeformDisplayRects());
+    barrier::FreeformDisplayRects::const_iterator server =
+        selection.displayRects.find(m_ServerName);
+    return server == selection.displayRects.end()
+        ? QList<QRect>() : server->second;
+}
+
+bool ServerConfig::saveCurrentTopologyProfile(QString* error)
+{
+    if (m_topologyProfileLoadResult !=
+        barrier::TopologyProfileStoreResult::Ok) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "saved display profiles must be repaired before editing");
+        }
+        return false;
+    }
+    if (!m_hasCurrentTopology) {
+        if (error != nullptr) {
+            *error = QStringLiteral("no current display topology is available");
+        }
+        return false;
+    }
+    barrier::TopologyProfile profile;
+    profile.topology = m_currentTopology;
+    profile.positions = m_freeformPositions;
+    profile.displayRects = m_freeformDisplayRects;
+    QStringList configuredScreens;
+    for (const Screen& screen : screens()) {
+        if (!screen.isNull()) {
+            configuredScreens.append(screen.name());
+        }
+    }
+    if (!barrier::restrictTopologyProfileToScreens(
+            profile, configuredScreens, error)) {
+        return false;
+    }
+    return barrier::putTopologyProfile(m_topologyProfiles, profile, error);
+}
+
+bool ServerConfig::commitAcceptedConfiguration(
+    ServerConfig& edited, QString* error)
+{
+    if (edited.m_pSettings != m_pSettings) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "edited server configuration uses a different settings store");
+        }
+        return false;
+    }
+    if (!settings().group().isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "server configuration settings group is not at its root");
+        }
+        return false;
+    }
+
+    QString saveError;
+    QMap<QString, QVariant> snapshot;
+    bool saved = false;
+    {
+        std::unique_ptr<QSettings> transactionSettings =
+            freshSettingsHandle(settings());
+        transactionSettings->sync();
+        if (transactionSettings->status() != QSettings::NoError) {
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "could not read current server settings");
+            }
+            return false;
+        }
+        snapshot = acceptedServerConfigSnapshot(*transactionSettings);
+
+        ServerConfig transactionConfig(edited);
+        transactionConfig.m_pSettings = transactionSettings.get();
+        transactionConfig.m_persistSettings = false;
+        saved = transactionConfig.saveSettings(&saveError);
+    }
+
+    if (!saved) {
+        bool restored = false;
+        {
+            std::unique_ptr<QSettings> recoverySettings =
+                freshSettingsHandle(settings());
+            restored = restoreAcceptedServerConfigSnapshot(
+                *recoverySettings, snapshot);
+        }
+        if (restored) {
+            std::unique_ptr<QSettings> verificationSettings =
+                freshSettingsHandle(settings());
+            verificationSettings->sync();
+            restored =
+                verificationSettings->status() == QSettings::NoError &&
+                acceptedServerConfigSnapshot(*verificationSettings) == snapshot;
+        }
+        if (error != nullptr) {
+            *error = restored
+                ? saveError
+                : QStringLiteral("%1; could not restore previous settings")
+                      .arg(saveError);
+        }
+        return false;
+    }
+
+    const bool persistSettings = m_persistSettings;
+    *this = edited;
+    m_persistSettings = persistSettings;
+    return true;
+}
+
 bool ServerConfig::save(const QString& fileName) const
 {
     QFile file(fileName);
@@ -151,8 +365,18 @@ void ServerConfig::init()
         addScreen(Screen());
 }
 
-void ServerConfig::saveSettings()
+bool ServerConfig::saveSettings(QString* error)
 {
+    if (m_topologyProfileLoadResult !=
+        barrier::TopologyProfileStoreResult::Ok) {
+        if (error != nullptr) {
+            *error = m_topologyProfileError.isEmpty()
+                ? QStringLiteral("saved display profiles are unavailable")
+                : m_topologyProfileError;
+        }
+        return false;
+    }
+
     settings().beginGroup("internalConfig");
     settings().remove("");
 
@@ -160,7 +384,11 @@ void ServerConfig::saveSettings()
     settings().setValue("numRows", numRows());
 
     barrier::saveFreeformLayoutSettings(
-            settings(), m_freeformPositions, m_freeformDisplayRects,
+            settings(),
+            m_hasCurrentTopology ? m_legacyFreeformPositions
+                                 : m_freeformPositions,
+            m_hasCurrentTopology ? m_legacyFreeformDisplayRects
+                                 : m_freeformDisplayRects,
             m_freeformDisplayNames);
 
     settings().setValue("hasHeartbeat", hasHeartbeat());
@@ -196,6 +424,32 @@ void ServerConfig::saveSettings()
     settings().endArray();
 
     settings().endGroup();
+
+    settings().sync();
+    if (settings().status() != QSettings::NoError) {
+        if (error != nullptr) {
+            *error = QStringLiteral("could not save server settings");
+        }
+        return false;
+    }
+
+    QString topologyStoreError;
+    const barrier::TopologyProfileStoreResult topologyStoreResult =
+        barrier::TopologyProfileStore::save(
+            settings(), m_topologyProfiles, &topologyStoreError);
+    if (topologyStoreResult != barrier::TopologyProfileStoreResult::Ok) {
+        qWarning() << "Could not save display topology profiles:"
+                   << topologyStoreError;
+        if (error != nullptr) {
+            *error = topologyStoreError;
+        }
+        return false;
+    }
+
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
 }
 
 void ServerConfig::loadSettings()
@@ -247,8 +501,19 @@ void ServerConfig::loadSettings()
     barrier::loadFreeformLayoutSettings(
             settings(), m_freeformPositions, m_freeformDisplayRects,
             m_freeformDisplayNames);
-
     settings().endGroup();
+
+
+    m_legacyFreeformPositions = m_freeformPositions;
+    m_legacyFreeformDisplayRects = m_freeformDisplayRects;
+    m_topologyProfileLoadResult = barrier::TopologyProfileStore::load(
+        settings(), m_topologyProfiles, &m_topologyProfileError);
+    if (m_topologyProfileLoadResult !=
+        barrier::TopologyProfileStoreResult::Ok) {
+        m_topologyProfiles.clear();
+        qWarning() << "Ignoring malformed display topology profiles:"
+                   << m_topologyProfileError;
+    }
 }
 
 int ServerConfig::adjacentScreenIndex(int idx, int deltaColumn, int deltaRow) const
@@ -394,6 +659,8 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     }
 
     outStream << "end" << endl << endl;
+    barrier::writeTopologyProfiles(outStream, config.m_topologyProfiles);
+
 
     outStream << "section: options" << endl;
 

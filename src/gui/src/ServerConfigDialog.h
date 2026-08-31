@@ -27,6 +27,7 @@
 #include "ui_ServerConfigDialogBase.h"
 
 #include <QDialog>
+class QLabel;
 
 class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
 {
@@ -53,7 +54,6 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
 
     protected:
         ServerConfig& serverConfig() { return m_ServerConfig; }
-        void setOrigServerConfig(const ServerConfig& s) { m_OrigServerConfig = s; }
         ScreenSetupModel& model() { return m_ScreenSetupModel; }
 
     private:
@@ -62,6 +62,7 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         ScreenSetupModel m_ScreenSetupModel;
         QString m_Message;
         FreeformServerConfigWidget* m_pFreeformWidget;
+        QLabel* m_pTopologyProfileStatusLabel;
         // This machine's own screen name (it's always the server side when
         // this dialog is open). Used to exclude the server while seeding all
         // connected client screens into the freeform canvas.

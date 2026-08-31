@@ -36,6 +36,7 @@
 #include "common/DataDirectories.h"
 #include "net/FingerprintDatabase.h"
 #include "net/SecureUtils.h"
+#include "server/ClientWakeRequest.h"
 #include "TrayIconActivation.h"
 
 #include <QtCore>
@@ -53,7 +54,14 @@
 
 #if defined(Q_OS_MAC)
 #include "MacWindowActivation.h"
+#include "MacProximityController.h"
+#include "ProximitySettingsDialog.h"
 #include <ApplicationServices/ApplicationServices.h>
+#endif
+
+#if defined(Q_OS_UNIX)
+#include <signal.h>
+#include <sys/types.h>
 #endif
 
 #if defined(Q_OS_WIN)
@@ -77,6 +85,18 @@ static const QString barrierConfigOpenFilter(barrierConfigFilter + ";;" + allFil
 static const QString barrierConfigSaveFilter(barrierConfigFilter);
 
 namespace {
+
+#if defined(Q_OS_MAC)
+const char kProximityChildGenerationProperty[] =
+    "barrier.proximityChildGeneration";
+
+quint64 proximityChildGeneration(const QProcess* process)
+{
+    return process == NULL
+        ? 0
+        : process->property(kProximityChildGenerationProperty).toULongLong();
+}
+#endif
 
 void showAndActivate(QWidget* window)
 {
@@ -129,6 +149,7 @@ static const char* barrierLargeIcon = ":/res/icons/256x256/barrier.ico";
 
 MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     m_Settings(settings),
+    m_ProximityConfig(settings),
     m_AppConfig(&appConfig),
     m_pBarrier(NULL),
     m_BarrierState(barrierDisconnected),
@@ -140,6 +161,11 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     m_pMenuBar(NULL),
     m_pMenuBarrier(NULL),
     m_pMenuHelp(NULL),
+    m_pTopologyStatusAction(NULL),
+    m_pConfigureTopologyAction(NULL),
+    m_pProximitySettingsAction(NULL),
+    m_pProximityOverrideAction(NULL),
+    m_pProximityStatusAction(NULL),
     m_pZeroconfService(NULL),
     m_pDataDownloader(NULL),
     m_DownloadMessageBox(NULL),
@@ -149,7 +175,23 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     m_SuppressEmptyServerWarning(false),
     m_ExpectedRunningState(kStopped),
     m_pSslCertificate(NULL),
-    m_pLogWindow(new LogWindow(nullptr))
+    m_pLogWindow(new LogWindow(nullptr)),
+    m_HasTopologyStatus(false),
+    m_ProximityManualOverride(false)
+#if defined(Q_OS_MAC)
+    , m_pProximityController(NULL)
+    , m_ProximityBluetoothPermissionPending(true)
+    , m_ProximityBluetoothAuthorized(false)
+    , m_ProximityBluetoothAvailable(true)
+    , m_ProximityChildRunning(false)
+    , m_ProximityProtocolConnected(false)
+    , m_ProximityScanning(false)
+    , m_ProximityAdvertising(false)
+    , m_ClientPresenceAdvertising(false)
+    , m_ProximityStoppingChild(false)
+    , m_ProximityRuntimeGatingEnabled(false)
+    , m_ProximityRestartRequired(false)
+#endif
 {
     // explicitly unset DeleteOnClose so the window can be show and hidden
     // repeatedly until Barrier is finished
@@ -159,10 +201,91 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     setAttribute(Qt::WA_X11NetWmWindowTypeDialog, true);
 
     setupUi(this);
+#if defined(Q_OS_MAC)
+    m_pProximityController = new MacProximityController(this);
+    m_ProximityClock.start();
+    m_ProximityTimer.setInterval(1000);
+    connect(&m_ProximityTimer, &QTimer::timeout,
+            this, &MainWindow::reconcileProximityClient);
+    m_ProximityRestartTimer.setInterval(1000);
+    m_ProximityRestartTimer.setSingleShot(true);
+    connect(
+        &m_ProximityRestartTimer, &QTimer::timeout,
+        this,
+        [this]() {
+            if (m_ProximityRestartPolicy.takeScheduledRetry()) {
+                reconcileProximityClient();
+            }
+        });
+    connect(
+        m_pProximityController,
+        &MacProximityController::bluetoothStateChanged,
+        this,
+        [this](MacProximityController::BluetoothState state) {
+            switch (state) {
+            case MacProximityController::BluetoothState::Unknown:
+                m_ProximityBluetoothPermissionPending = true;
+                m_ProximityBluetoothAuthorized = false;
+                m_ProximityBluetoothAvailable = true;
+                break;
+            case MacProximityController::BluetoothState::Unauthorized:
+                m_ProximityBluetoothPermissionPending = false;
+                m_ProximityBluetoothAuthorized = false;
+                m_ProximityBluetoothAvailable = true;
+                break;
+            case MacProximityController::BluetoothState::PoweredOn:
+                m_ProximityBluetoothPermissionPending = false;
+                m_ProximityBluetoothAuthorized = true;
+                m_ProximityBluetoothAvailable = true;
+                break;
+            case MacProximityController::BluetoothState::PoweredOff:
+            case MacProximityController::BluetoothState::Failed:
+                m_ProximityBluetoothPermissionPending = false;
+                m_ProximityBluetoothAuthorized = true;
+                m_ProximityBluetoothAvailable = false;
+                break;
+            }
+            reconcileProximityClient();
+        });
+    connect(
+        m_pProximityController,
+        &MacProximityController::peripheralObserved,
+        this,
+        [this](QUuid peripheralId, QString, int rssiDbm) {
+            barrier::ProximityPairing pairing;
+            if (m_ProximitySignalFilter &&
+                m_ProximityConfig.pairing(pairing) &&
+                pairing.peripheralId == peripheralId) {
+                m_ProximitySignalFilter->addSample(
+                    rssiDbm, m_ProximityClock.elapsed());
+                reconcileProximityClient();
+            }
+        });
+    connect(
+        m_pProximityController,
+        &MacProximityController::operationFailed,
+        this,
+        [this](const QString& operation, const QString& userMessage) {
+            if (operation == QStringLiteral("advertising")) {
+                appendLogError(userMessage);
+                m_ProximityAdvertising = false;
+                m_ProximityAdvertisingId.clear();
+            }
+            else if (operation ==
+                     QStringLiteral("client-presence-advertising")) {
+                appendLogError(userMessage);
+                m_ClientPresenceAdvertising = false;
+                m_ClientPresenceAdvertisingId.clear();
+            }
+        });
+#endif
     setWindowIcon(QIcon(barrierLargeIcon));
     createMenuBar();
     loadSettings();
     initConnections();
+#if defined(Q_OS_MAC)
+    configureProximityController();
+#endif
 
     m_pLabelScreenName->setText(getScreenName());
     m_pLabelIpAddresses->setText(getIPAddresses());
@@ -235,6 +358,10 @@ void MainWindow::open()
         promptAutoConfig();
     }
 
+    // Loading persisted widget state does not necessarily emit a toggle.
+    // Refresh explicitly so proximity clients browse on every launch.
+    updateZeroconfService();
+
     // only start if user has previously started. this stops the gui from
     // auto hiding before the user has configured barrier (which of course
     // confuses first time users, who think barrier has crashed).
@@ -250,6 +377,26 @@ void MainWindow::setStatus(const QString &status)
     m_pStatusLabel->setText(status);
 }
 
+void MainWindow::resetTopologyStatusSession()
+{
+    m_TopologyStatus = barrier::TopologyStatus();
+    m_HasTopologyStatus = false;
+    m_NotifiedUnknownTopologyKeys.clear();
+    m_ClickableUnknownTopologyKey.clear();
+    m_ServerConfig.clearCurrentTopology();
+    if (m_pTopologyStatusAction != NULL) {
+        m_pTopologyStatusAction->setText(
+            tr("Display arrangement: unavailable"));
+    }
+    if (m_pConfigureTopologyAction != NULL) {
+        m_pConfigureTopologyAction->setVisible(false);
+    }
+    if (m_pZeroconfService != NULL &&
+        barrier_type() == BarrierType::Server) {
+        m_pZeroconfService->setServerDisplayReady(false);
+    }
+}
+
 void MainWindow::createTrayIcon()
 {
     m_pTrayIconMenu = new QMenu(this);
@@ -257,6 +404,13 @@ void MainWindow::createTrayIcon()
     m_pTrayIconMenu->addAction(m_pActionStartBarrier);
     m_pTrayIconMenu->addAction(m_pActionStopBarrier);
     m_pTrayIconMenu->addAction(m_pActionShowLog);
+    m_pTrayIconMenu->addAction(m_pTopologyStatusAction);
+    m_pTrayIconMenu->addAction(m_pConfigureTopologyAction);
+#if defined(Q_OS_MAC)
+    m_pTrayIconMenu->addAction(m_pProximityStatusAction);
+    m_pTrayIconMenu->addAction(m_pProximitySettingsAction);
+    m_pTrayIconMenu->addAction(m_pProximityOverrideAction);
+#endif
     m_pTrayIconMenu->addSeparator();
 
     m_pTrayIconMenu->addAction(m_pActionMinimize);
@@ -270,16 +424,49 @@ void MainWindow::createTrayIcon()
 
     connect(m_pTrayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
             this, SLOT(trayActivated(QSystemTrayIcon::ActivationReason)));
+    connect(m_pTrayIcon, &QSystemTrayIcon::messageClicked, this, [this]() {
+        if (!m_ClickableUnknownTopologyKey.isEmpty() &&
+            m_HasTopologyStatus &&
+            m_TopologyStatus.state ==
+                barrier::TopologyStatusState::StableUnknown &&
+            m_TopologyStatus.key == m_ClickableUnknownTopologyKey) {
+            m_ClickableUnknownTopologyKey.clear();
+            showAndActivate(this);
+            showConfigureServer(
+                tr("Configure this display arrangement before switching "
+                   "between screens."));
+        }
+    });
 
     setIcon(barrierDisconnected);
 
     m_pTrayIcon->show();
+    if (m_HasTopologyStatus &&
+        m_TopologyStatus.state ==
+            barrier::TopologyStatusState::StableUnknown &&
+        !m_NotifiedUnknownTopologyKeys.contains(m_TopologyStatus.key)) {
+        m_pTrayIcon->showMessage(
+            tr("New display arrangement"),
+            tr("Configure this display arrangement before switching between screens."));
+        m_ClickableUnknownTopologyKey = m_TopologyStatus.key;
+        m_NotifiedUnknownTopologyKeys.insert(m_TopologyStatus.key);
+    }
 }
 
 void MainWindow::retranslateMenuBar()
 {
     m_pMenuBarrier->setTitle(tr("&Barrier"));
     m_pMenuHelp->setTitle(tr("&Help"));
+#if defined(Q_OS_MAC)
+    if (m_pProximitySettingsAction != NULL) {
+        m_pProximitySettingsAction->setText(tr("Proximity Settings…"));
+    }
+    if (m_pProximityOverrideAction != NULL) {
+        m_pProximityOverrideAction->setText(
+            m_ProximityManualOverride ? tr("Resume Proximity Gating")
+                                      : tr("Connect Anyway"));
+    }
+#endif
 }
 
 void MainWindow::createMenuBar()
@@ -294,6 +481,33 @@ void MainWindow::createMenuBar()
 
     m_pMenuBarrier->addAction(m_pActionShowLog);
     m_pMenuBarrier->addAction(m_pActionSettings);
+    m_pTopologyStatusAction =
+        new QAction(tr("Display arrangement: unavailable"), this);
+    m_pTopologyStatusAction->setEnabled(false);
+    m_pConfigureTopologyAction =
+        new QAction(tr("Configure this display arrangement"), this);
+    m_pConfigureTopologyAction->setVisible(false);
+    connect(m_pConfigureTopologyAction, &QAction::triggered,
+            this, [this]() { showConfigureServer(); });
+    m_pMenuBarrier->addAction(m_pTopologyStatusAction);
+    m_pMenuBarrier->addAction(m_pConfigureTopologyAction);
+#if defined(Q_OS_MAC)
+    m_pProximityStatusAction =
+        new QAction(tr("Proximity: Off"), this);
+    m_pProximityStatusAction->setEnabled(false);
+    m_pMenuBarrier->addAction(m_pProximityStatusAction);
+    m_pProximitySettingsAction =
+        new QAction(tr("Proximity Settings…"), this);
+    connect(m_pProximitySettingsAction, &QAction::triggered,
+            this, &MainWindow::showProximitySettings);
+    m_pProximityOverrideAction =
+        new QAction(tr("Connect Anyway"), this);
+    m_pProximityOverrideAction->setVisible(false);
+    connect(m_pProximityOverrideAction, &QAction::triggered,
+            this, &MainWindow::toggleProximityOverride);
+    m_pMenuBarrier->addAction(m_pProximitySettingsAction);
+    m_pMenuBarrier->addAction(m_pProximityOverrideAction);
+#endif
     m_pMenuBarrier->addAction(m_pActionMinimize);
     m_pMenuBarrier->addSeparator();
     m_pMenuBarrier->addAction(m_pActionSave);
@@ -303,6 +517,364 @@ void MainWindow::createMenuBar()
 
     setMenuBar(m_pMenuBar);
 }
+
+void MainWindow::showProximitySettings()
+{
+#if defined(Q_OS_MAC)
+    const bool gatingWasEnabled = m_ProximityConfig.clientGatingEnabled();
+    barrier::ProximityPairing pairingBefore;
+    const bool wasPaired = m_ProximityConfig.pairing(pairingBefore);
+    ProximitySettingsDialog dialog(
+        this, barrier_type() == BarrierType::Server,
+        m_ProximityConfig, *m_pProximityController, m_ZeroconfRecords);
+    bool changed = false;
+    connect(&dialog, &ProximitySettingsDialog::configurationChanged,
+            this, [&changed]() { changed = true; });
+    connect(this, &MainWindow::zeroconfRecordsChanged,
+            &dialog, &ProximitySettingsDialog::bonjourServersChanged);
+    dialog.exec();
+    if (changed) {
+        barrier::ProximityPairing pairingAfter;
+        const bool isPaired = m_ProximityConfig.pairing(pairingAfter);
+        const bool samePairing = wasPaired && isPaired &&
+            pairingBefore.proximityId == pairingAfter.proximityId &&
+            pairingBefore.peripheralId == pairingAfter.peripheralId;
+        const bool preserveClientRuntime = samePairing &&
+            gatingWasEnabled == m_ProximityConfig.clientGatingEnabled();
+        const bool boundedThresholdChange = preserveClientRuntime &&
+            gatingWasEnabled &&
+            pairingBefore.thresholdPolicy != pairingAfter.thresholdPolicy &&
+            m_ProximitySignalFilter;
+        updateZeroconfService();
+        m_ProximityManualOverride = false;
+        if (preserveClientRuntime) {
+            if (boundedThresholdChange) {
+                m_ProximitySignalFilter->reconfigure(
+                    pairingAfter.thresholdPolicy,
+                    m_ProximityClock.elapsed());
+            }
+        }
+        else {
+            m_ProximitySignalFilter.reset();
+            m_ProximityPolicy.reset();
+            m_ProximityRestartPolicy.updateEligibility(false);
+            m_ProximityRestartTimer.stop();
+        }
+        configureProximityController();
+    }
+#endif
+}
+
+void MainWindow::toggleProximityOverride()
+{
+    m_ProximityManualOverride = !m_ProximityManualOverride;
+    if (m_pProximityOverrideAction != NULL) {
+        m_pProximityOverrideAction->setText(
+            m_ProximityManualOverride ? tr("Resume Proximity Gating")
+                                      : tr("Connect Anyway"));
+    }
+#if defined(Q_OS_MAC)
+    reconcileProximityClient();
+#endif
+}
+
+#if defined(Q_OS_MAC)
+bool MainWindow::proximityClientEnabled() const
+{
+    return barrier_type() == BarrierType::Client &&
+           m_ProximityConfig.clientGatingEnabled();
+}
+
+QString MainWindow::pairedProximityEndpoint() const
+{
+    barrier::ProximityPairing pairing;
+    if (!m_ProximityConfig.pairing(pairing)) {
+        return QString();
+    }
+    for (const ZeroconfRecord& record : m_ZeroconfRecords) {
+        if (record.matchesProximityServer(pairing.proximityId) &&
+            record.isDisplayReady() && record.hasResolvedService()) {
+            return record.barrierEndpoint(m_AppConfig->port());
+        }
+    }
+    return QString();
+}
+
+const ZeroconfRecord* MainWindow::pairedProximityServer() const
+{
+    barrier::ProximityPairing pairing;
+    if (!m_ProximityConfig.pairing(pairing)) {
+        return nullptr;
+    }
+    for (const ZeroconfRecord& record : m_ZeroconfRecords) {
+        if (record.matchesProximityServer(pairing.proximityId) &&
+            record.hasResolvedService()) {
+            return &record;
+        }
+    }
+    return nullptr;
+}
+
+barrier::ProximityInputs MainWindow::currentProximityInputs() const
+{
+    const ZeroconfRecord* server = pairedProximityServer();
+    const qint64 nowMs = m_ProximityClock.elapsed();
+    barrier::ProximityInputs inputs;
+    inputs.enabled = proximityClientEnabled();
+    inputs.userWantsBarrier = m_ExpectedRunningState == kStarted;
+    inputs.bluetoothPermissionPending =
+        m_ProximityBluetoothPermissionPending;
+    inputs.bluetoothAuthorized = m_ProximityBluetoothAuthorized;
+    inputs.bluetoothAvailable = m_ProximityBluetoothAvailable;
+    inputs.pairedPeerNear = m_ProximitySignalFilter &&
+        m_ProximitySignalFilter->isNear(nowMs);
+    inputs.pairedPeerReconfigurationGrace = m_ProximitySignalFilter &&
+        m_ProximitySignalFilter->isReconfigurationGrace(nowMs);
+    inputs.pairedPeerDepartureGrace = m_ProximitySignalFilter &&
+        m_ProximitySignalFilter->isDepartureGrace(nowMs);
+    inputs.pairedPeerDepartureWarning = m_ProximitySignalFilter &&
+        m_ProximitySignalFilter->isDepartureWarning(nowMs);
+    inputs.pairedBonjourPresent = server != nullptr;
+    inputs.serverDisplayReady = !pairedProximityEndpoint().isEmpty();
+    inputs.manualOverride = m_ProximityManualOverride;
+    inputs.childRunning = isBarrierChildRunning();
+    inputs.protocolConnected = m_ProximityProtocolConnected;
+    inputs.monotonicMs = nowMs;
+    return inputs;
+}
+
+void MainWindow::configureProximityController()
+{
+    const bool shouldAdvertise = barrier::shouldAdvertiseProximityServer(
+        barrier_type() == BarrierType::Server,
+        m_ProximityConfig.serverAdvertiserEnabled(),
+        m_ExpectedRunningState == kStarted);
+    if (shouldAdvertise) {
+        QString error;
+        const QString proximityId =
+            m_ProximityConfig.serverProximityId(&error);
+        if (proximityId.isEmpty()) {
+            appendLogError(
+                tr("Unable to enable proximity advertising: %1").arg(error));
+            if (m_ProximityAdvertising) {
+                m_pProximityController->stopAdvertising();
+                m_ProximityAdvertising = false;
+                m_ProximityAdvertisingId.clear();
+            }
+        }
+        else if (!m_ProximityAdvertising ||
+                 m_ProximityAdvertisingId != proximityId) {
+            m_pProximityController->startAdvertising(proximityId);
+            m_ProximityAdvertising = true;
+            m_ProximityAdvertisingId = proximityId;
+        }
+    }
+    else {
+        // stopAdvertising() is intentionally idempotent. The controller may
+        // still have an asynchronous advertising request after reporting a
+        // failure even when the GUI's m_ProximityAdvertising flag is false.
+        m_pProximityController->stopAdvertising();
+        m_ProximityAdvertising = false;
+        m_ProximityAdvertisingId.clear();
+    }
+
+    barrier::ProximityPairing presencePairing;
+    const bool shouldShareClientPresence =
+        barrier_type() == BarrierType::Client &&
+        m_ExpectedRunningState == kStarted &&
+        m_ProximityConfig.pairing(presencePairing) &&
+        presencePairing.signalSharingEnabled &&
+        !presencePairing.clientRoutingId.isEmpty();
+    if (shouldShareClientPresence) {
+        if (!m_ClientPresenceAdvertising ||
+            m_ClientPresenceAdvertisingId !=
+                presencePairing.clientRoutingId) {
+            // Mark the request before calling into CoreBluetooth so a
+            // synchronous validation failure can clear it through
+            // operationFailed without being overwritten on return.
+            m_ClientPresenceAdvertising = true;
+            m_ClientPresenceAdvertisingId =
+                presencePairing.clientRoutingId;
+            m_pProximityController->startClientPresenceAdvertising(
+                presencePairing.clientRoutingId);
+        }
+    }
+    else {
+        m_pProximityController->stopClientPresenceAdvertising();
+        m_ClientPresenceAdvertising = false;
+        m_ClientPresenceAdvertisingId.clear();
+    }
+
+    const bool wasGating = m_ProximityRuntimeGatingEnabled;
+    const bool shouldGate = proximityClientEnabled();
+    if (shouldGate) {
+        barrier::ProximityPairing pairing;
+        if (!m_ProximitySignalFilter &&
+            m_ProximityConfig.pairing(pairing)) {
+            m_ProximitySignalFilter.reset(
+                new barrier::ProximitySignalFilter(
+                    pairing.thresholdPolicy));
+        }
+        if (!m_ProximityScanning) {
+            m_pProximityController->startScanning();
+            m_ProximityScanning = true;
+        }
+        if (!m_ProximityTimer.isActive()) {
+            m_ProximityTimer.start();
+        }
+    }
+    else {
+        if (m_ProximityScanning) {
+            m_pProximityController->stopScanning();
+            m_ProximityScanning = false;
+        }
+        m_ProximityTimer.stop();
+        m_ProximitySignalFilter.reset();
+        m_ProximityManualOverride = false;
+    }
+
+    if (wasGating != shouldGate) {
+        m_ProximityRestartRequired = true;
+    }
+    m_ProximityRuntimeGatingEnabled = shouldGate;
+    reconcileProximityClient();
+}
+
+void MainWindow::reconcileProximityClient()
+{
+    if (m_ProximityStoppingChild) {
+        return;
+    }
+    const bool enabled = proximityClientEnabled();
+    if (!enabled) {
+        m_ProximityPolicy.reset();
+    }
+    barrier::ProximityDecision decision = enabled
+        ? m_ProximityPolicy.evaluate(currentProximityInputs())
+        : barrier::ProximityDecision{
+              barrier::ProximityPolicyState::Disabled, false, false};
+    m_ProximityRestartPolicy.updateEligibility(
+        enabled && decision.canStartChild);
+    if (!decision.canStartChild && m_ProximityRestartTimer.isActive()) {
+        m_ProximityRestartTimer.stop();
+    }
+    const QString desiredEndpoint = decision.canStartChild
+        ? clientEndpointSelection().endpoint
+        : QString();
+    if (enabled && decision.canStartChild &&
+        isBarrierChildRunning() &&
+        desiredEndpoint != m_ProximityRunningEndpoint) {
+        m_ProximityRestartRequired = true;
+    }
+
+    if (m_ProximityRestartRequired) {
+        if (isBarrierChildRunning()) {
+            stopBarrierChild(true);
+            QTimer::singleShot(
+                0, this, &MainWindow::reconcileProximityClient);
+            updateProximityStatus(decision.state);
+            return;
+        }
+        m_ProximityRestartRequired = false;
+        if (!enabled && m_ExpectedRunningState == kStarted) {
+            startBarrierChild();
+            updateProximityStatus(
+                barrier::ProximityPolicyState::Disabled);
+            return;
+        }
+    }
+
+    if (!enabled) {
+        updateProximityStatus(barrier::ProximityPolicyState::Disabled);
+        return;
+    }
+
+    if (decision.shouldRunChild && decision.canStartChild &&
+        !isBarrierChildRunning() &&
+        m_ProximityRestartPolicy.automaticLaunchAllowed()) {
+        startBarrierChild();
+    }
+    else if (!decision.shouldRunChild && isBarrierChildRunning()) {
+        stopBarrierChild(true);
+    }
+    if (m_ExpectedRunningState == kStarted &&
+        !isBarrierChildRunning()) {
+        setBarrierState(barrierConnecting);
+    }
+    else if (m_ExpectedRunningState == kStopped) {
+        setBarrierState(barrierDisconnected);
+    }
+    decision = m_ProximityPolicy.evaluate(currentProximityInputs());
+    updateProximityStatus(
+        decision.canStartChild && m_ProximityRestartPolicy.suppressed()
+            ? barrier::ProximityPolicyState::RetrySuppressed
+            : decision.state);
+}
+
+void MainWindow::updateProximityStatus(
+    barrier::ProximityPolicyState state)
+{
+    QString text;
+    switch (state) {
+    case barrier::ProximityPolicyState::Disabled:
+        text = tr("Proximity: Off");
+        break;
+    case barrier::ProximityPolicyState::WaitingForPermission:
+        text = tr("Proximity: Waiting for Bluetooth permission");
+        break;
+    case barrier::ProximityPolicyState::SensorUnavailable:
+        text = tr("Proximity paused: Bluetooth denied or unavailable");
+        break;
+    case barrier::ProximityPolicyState::WaitingForPeer:
+        text = tr("Proximity: Waiting for paired server");
+        break;
+    case barrier::ProximityPolicyState::WaitingForNetwork:
+        text = tr("Proximity: Waiting for network-ready paired server");
+        break;
+    case barrier::ProximityPolicyState::Starting:
+        text = tr("Proximity: Starting client");
+        break;
+    case barrier::ProximityPolicyState::Connected:
+        text = tr("Proximity: Connected");
+        break;
+    case barrier::ProximityPolicyState::DepartureGrace:
+        text = tr("Proximity: Server signal lost; disconnecting soon");
+        break;
+    case barrier::ProximityPolicyState::ReconfigurationGrace:
+        text = tr("Proximity: Applying new signal range");
+        break;
+    case barrier::ProximityPolicyState::ManualOverride:
+        text = m_ProximityProtocolConnected
+            ? tr("Proximity override: Connected")
+            : (isBarrierChildRunning()
+                ? tr("Proximity override: Starting client")
+                : tr("Proximity override: Waiting for network-ready server"));
+        break;
+    case barrier::ProximityPolicyState::RetrySuppressed:
+        text = tr("Proximity paused: Client exited repeatedly");
+        break;
+    }
+
+    if (m_pProximityStatusAction != NULL) {
+        m_pProximityStatusAction->setText(text);
+        m_pProximityStatusAction->setVisible(
+            barrier_type() == BarrierType::Client);
+    }
+    if (m_pProximityOverrideAction != NULL) {
+        const bool overrideAvailable =
+            proximityClientEnabled() &&
+            (state == barrier::ProximityPolicyState::SensorUnavailable ||
+             m_ProximityManualOverride);
+        m_pProximityOverrideAction->setVisible(overrideAvailable);
+        m_pProximityOverrideAction->setText(
+            m_ProximityManualOverride ? tr("Resume Proximity Gating")
+                                      : tr("Connect Anyway"));
+    }
+    if (proximityClientEnabled()) {
+        setStatus(text);
+    }
+}
+#endif
 
 void MainWindow::loadSettings()
 {
@@ -374,23 +946,19 @@ void MainWindow::trayActivated(QSystemTrayIcon::ActivationReason reason)
 
 void MainWindow::logOutput()
 {
-    if (m_pBarrier)
-    {
-        QString text(m_pBarrier->readAllStandardOutput());
-        for (QString line : text.split(QRegExp("\r|\n|\r\n"))) {
-            if (!line.isEmpty())
-            {
-                appendLogRaw(line);
-            }
-        }
+    if (m_pBarrier != NULL) {
+        processLogChunk(
+            QString::fromLocal8Bit(m_pBarrier->readAllStandardOutput()),
+            m_StdoutLogBuffer);
     }
 }
 
 void MainWindow::logError()
 {
-    if (m_pBarrier)
-    {
-        appendLogRaw(m_pBarrier->readAllStandardError());
+    if (m_pBarrier != NULL) {
+        processLogChunk(
+            QString::fromLocal8Bit(m_pBarrier->readAllStandardError()),
+            m_StderrLogBuffer);
     }
 }
 
@@ -412,11 +980,50 @@ void MainWindow::appendLogError(const QString& text)
     m_pLogWindow->appendError(text);
 }
 
+void MainWindow::processLogChunk(const QString& text, QString& buffer)
+{
+    buffer.append(text);
+    while (true) {
+        const int carriageReturn = buffer.indexOf(QLatin1Char('\r'));
+        const int lineFeed = buffer.indexOf(QLatin1Char('\n'));
+        int separator = carriageReturn;
+        if (separator < 0 || (lineFeed >= 0 && lineFeed < separator)) {
+            separator = lineFeed;
+        }
+        if (separator < 0) {
+            break;
+        }
+
+        const QString line = buffer.left(separator);
+        int consumed = separator + 1;
+        if (buffer.at(separator) == QLatin1Char('\r') &&
+            consumed < buffer.size() &&
+            buffer.at(consumed) == QLatin1Char('\n')) {
+            ++consumed;
+        }
+        buffer.remove(0, consumed);
+        if (!line.isEmpty()) {
+            updateFromLogLine(line);
+        }
+    }
+}
+
+void MainWindow::flushPendingLogChunks()
+{
+    if (!m_StdoutLogBuffer.isEmpty()) {
+        updateFromLogLine(m_StdoutLogBuffer);
+        m_StdoutLogBuffer.clear();
+    }
+    if (!m_StderrLogBuffer.isEmpty()) {
+        updateFromLogLine(m_StderrLogBuffer);
+        m_StderrLogBuffer.clear();
+    }
+}
+
 void MainWindow::appendLogRaw(const QString& text)
 {
     for (QString line : text.split(QRegExp("\r|\n|\r\n"))) {
         if (!line.isEmpty()) {
-            m_pLogWindow->appendRaw(line);
             updateFromLogLine(line);
         }
     }
@@ -424,6 +1031,87 @@ void MainWindow::appendLogRaw(const QString& text)
 
 void MainWindow::updateFromLogLine(const QString &line)
 {
+    const QByteArray utf8Line = line.toUtf8();
+    std::string wakeTarget;
+    const barrier::ClientWakeRequestParseResult wakeResult =
+        barrier::parseClientWakeRequest(
+            std::string(utf8Line.constData(),
+                        static_cast<std::size_t>(utf8Line.size())),
+            wakeTarget);
+    if (wakeResult == barrier::ClientWakeRequestParseResult::Valid &&
+        m_pZeroconfService != NULL &&
+        barrier_type() == BarrierType::Server) {
+        m_pZeroconfService->wakeClient(QString::fromUtf8(
+            wakeTarget.data(), static_cast<int>(wakeTarget.size())));
+    }
+
+    QRegExp connectedClient(
+        QStringLiteral(".*client \"([^\"]+)\" has connected$"));
+    if (m_pZeroconfService != NULL &&
+        barrier_type() == BarrierType::Server &&
+        connectedClient.exactMatch(line)) {
+        m_pZeroconfService->clientConnected(connectedClient.cap(1));
+    }
+
+    barrier::TopologyStatus parsed;
+    const barrier::TopologyStatusParseResult result =
+        barrier::TopologyStatusParser::parse(line, parsed);
+    if (result == barrier::TopologyStatusParseResult::Valid) {
+        m_TopologyStatus = parsed;
+        m_HasTopologyStatus = true;
+        if (parsed.topology.empty()) {
+            m_ServerConfig.clearCurrentTopology();
+        }
+        else {
+            m_ServerConfig.setCurrentTopology(parsed.topology);
+        }
+
+        QString statusText;
+        bool configureVisible = false;
+        switch (parsed.state) {
+        case barrier::TopologyStatusState::Reconfiguring:
+            statusText = tr("Display arrangement: changing");
+            break;
+        case barrier::TopologyStatusState::StableKnown:
+            statusText = tr("Display arrangement: configured");
+            break;
+        case barrier::TopologyStatusState::StableUnknown:
+            statusText = tr("Display arrangement: configuration required");
+            configureVisible = true;
+            if (m_pTrayIcon != NULL &&
+                !m_NotifiedUnknownTopologyKeys.contains(parsed.key)) {
+                m_pTrayIcon->showMessage(
+                    tr("New display arrangement"),
+                    tr("Configure this display arrangement before switching between screens."));
+                m_ClickableUnknownTopologyKey = parsed.key;
+                m_NotifiedUnknownTopologyKeys.insert(parsed.key);
+            }
+            break;
+        case barrier::TopologyStatusState::NoDisplayGrace:
+            statusText = tr("Display arrangement: waiting for displays");
+            break;
+        case barrier::TopologyStatusState::Unavailable:
+            statusText = tr("Display arrangement: unavailable");
+            break;
+        }
+        if (parsed.state != barrier::TopologyStatusState::StableUnknown ||
+            parsed.key != m_ClickableUnknownTopologyKey) {
+            m_ClickableUnknownTopologyKey.clear();
+        }
+        if (m_pTopologyStatusAction != NULL) {
+            m_pTopologyStatusAction->setText(statusText);
+        }
+        if (m_pConfigureTopologyAction != NULL) {
+            m_pConfigureTopologyAction->setVisible(configureVisible);
+        }
+        if (m_pZeroconfService != NULL &&
+            barrier_type() == BarrierType::Server) {
+            m_pZeroconfService->setServerDisplayReady(
+                parsed.displayReady());
+        }
+    }
+
+    m_pLogWindow->appendRaw(line);
     // TODO: this code makes Andrew cry
     checkConnected(line);
     checkFingerprint(line);
@@ -476,11 +1164,18 @@ void MainWindow::checkClientDisplayNames(const QString& line)
 void MainWindow::checkConnected(const QString& line)
 {
     // TODO: implement ipc connection state messages to replace this hack.
+    const bool clientProtocolConnected = line.contains("connected to server");
     if (line.contains("started server") ||
-        line.contains("connected to server") ||
+        clientProtocolConnected ||
         line.contains("server status: active"))
     {
         setBarrierState(barrierConnected);
+#if defined(Q_OS_MAC)
+        if (clientProtocolConnected && proximityClientEnabled()) {
+            m_ProximityProtocolConnected = true;
+            reconcileProximityClient();
+        }
+#endif
 
         if (!appConfig().startedBefore() && isVisible()) {
                 QMessageBox::information(
@@ -569,11 +1264,50 @@ void MainWindow::proofreadInfo()
 
 void MainWindow::startBarrier()
 {
-    bool desktopMode = appConfig().processMode() == Desktop;
-    bool serviceMode = appConfig().processMode() == Service;
+    m_ExpectedRunningState = kStarted;
+#if defined(Q_OS_MAC)
+    barrier::ProximityPairing presencePairing;
+    if (m_ProximityConfig.pairing(presencePairing) &&
+        presencePairing.signalSharingEnabled) {
+        updateZeroconfService();
+    }
+    configureProximityController();
+    if (proximityClientEnabled()) {
+        reconcileProximityClient();
+        return;
+    }
+#endif
+    startBarrierChild();
+}
+void MainWindow::startBarrierChild()
+{
+#if defined(Q_OS_MAC)
+    if (m_ProximityStoppingChild) {
+        return;
+    }
+#endif
+    if (isBarrierChildRunning()) {
+        return;
+    }
+    if (barrierProcess() != NULL &&
+        barrierProcess()->state() == QProcess::NotRunning) {
+#if defined(Q_OS_MAC)
+        m_ProximityProcessExitTracker.forgetProcess(
+            proximityChildGeneration(barrierProcess()));
+#endif
+        delete barrierProcess();
+        setBarrierProcess(NULL);
+    }
+    resetTopologyStatusSession();
+    m_StdoutLogBuffer.clear();
+    m_StderrLogBuffer.clear();
+    const bool desktopMode = appConfig().processMode() == Desktop;
+    const bool serviceMode = appConfig().processMode() == Service;
 
     appendLogDebug("starting process");
-    m_ExpectedRunningState = kStarted;
+#if defined(Q_OS_MAC)
+    m_ProximityProtocolConnected = false;
+#endif
     setBarrierState(barrierConnecting);
 
     QString app;
@@ -586,7 +1320,15 @@ void MainWindow::startBarrier()
 
     if (desktopMode)
     {
-        setBarrierProcess(new QProcess(this));
+        QProcess* process = new QProcess(this);
+#if defined(Q_OS_MAC)
+        const quint64 generation =
+            m_ProximityProcessExitTracker.beginProcess();
+        process->setProperty(
+            kProximityChildGenerationProperty,
+            QVariant::fromValue<qulonglong>(generation));
+#endif
+        setBarrierProcess(process);
     }
     else
     {
@@ -664,15 +1406,58 @@ void MainWindow::startBarrier()
         {
             show();
             QMessageBox::warning(this, tr("Program can not be started"), QString(tr("The executable<br><br>%1<br><br>could not be successfully started, although it does exist. Please check if you have sufficient permissions to run this program.").arg(app)));
+#if defined(Q_OS_MAC)
+            if (proximityClientEnabled()) {
+                m_ExpectedRunningState = kStopped;
+                m_ProximityChildRunning = false;
+                reconcileProximityClient();
+            }
+#endif
             return;
         }
+#if defined(Q_OS_MAC)
+        m_ProximityChildRunning = true;
+#endif
     }
 
     if (serviceMode)
     {
         QString command(app + " " + args.join(" "));
         m_IpcClient.sendCommand(command, appConfig().elevateMode());
+#if defined(Q_OS_MAC)
+        m_ProximityChildRunning = true;
+#endif
     }
+#if defined(Q_OS_MAC)
+    m_ProximityRunningEndpoint = proximityClientEnabled()
+        ? clientEndpointSelection().endpoint
+        : QString();
+#endif
+}
+
+barrier::ClientEndpointSelection MainWindow::clientEndpointSelection() const
+{
+    const bool autoConfigEnabled = m_pCheckBoxAutoConfig->isChecked();
+    QString discoveredEndpoint;
+    bool proximityGatingEnabled = false;
+#if defined(Q_OS_MAC)
+    proximityGatingEnabled = proximityClientEnabled();
+    if (proximityGatingEnabled) {
+        discoveredEndpoint = pairedProximityEndpoint();
+    }
+#endif
+    if (!proximityGatingEnabled && autoConfigEnabled &&
+        m_pComboServerList->count() != 0) {
+        const ZeroconfRecord record =
+            m_pComboServerList->currentData(Qt::UserRole + 3)
+                .value<ZeroconfRecord>();
+        discoveredEndpoint = record.barrierEndpoint(m_AppConfig->port());
+    }
+
+    return barrier::selectClientEndpoint(
+        proximityGatingEnabled, autoConfigEnabled,
+        m_pLineEditHostname->text(), discoveredEndpoint,
+        m_AppConfig->port());
 }
 
 bool MainWindow::clientArgs(QStringList& args, QString& app)
@@ -697,26 +1482,29 @@ bool MainWindow::clientArgs(QStringList& args, QString& app)
         appConfig().persistLogDir();
         args << "--log" << appConfig().logFilenameCmd();
     }
-
-    // check auto config first, if it is disabled or no server detected,
-    // use line edit host name if it is not empty
-    if (m_pCheckBoxAutoConfig->isChecked()) {
-        if (m_pComboServerList->count() != 0) {
-            QString serverIp = m_pComboServerList->currentText();
-            args << "[" + serverIp + "]:" + QString::number(appConfig().port());
-            return true;
-        }
-    } else if (m_pLineEditHostname->text().isEmpty()) {
+    const barrier::ClientEndpointSelection selection =
+        clientEndpointSelection();
+    if (selection.status ==
+        barrier::ClientEndpointStatus::WaitingForProximity) {
+        return false;
+    }
+    if (selection.status ==
+        barrier::ClientEndpointStatus::MissingServerAddress) {
         show();
         if (!m_SuppressEmptyServerWarning) {
-            QMessageBox::warning(this, tr("Hostname is empty"),
-                             tr("Please fill in a hostname for the barrier client to connect to."));
+            QMessageBox::warning(
+                this, tr("Hostname is empty"),
+                tr("Please fill in a hostname for the barrier client to connect to."));
         }
         return false;
     }
-
-    args << "[" + m_pLineEditHostname->text() + "]:" + QString::number(appConfig().port());
-
+#if defined(Q_OS_MAC)
+    if (proximityClientEnabled()) {
+        args << "--no-restart" << selection.endpoint;
+        return true;
+    }
+#endif
+    args << selection.endpoint;
     return true;
 }
 
@@ -812,9 +1600,44 @@ bool MainWindow::serverArgs(QStringList& args, QString& app)
 
 void MainWindow::stopBarrier()
 {
-    appendLogDebug("stopping process");
-
     m_ExpectedRunningState = kStopped;
+#if defined(Q_OS_MAC)
+    barrier::ProximityPairing presencePairing;
+    if (m_ProximityConfig.pairing(presencePairing) &&
+        presencePairing.signalSharingEnabled) {
+        updateZeroconfService();
+    }
+    m_ProximityManualOverride = false;
+    m_ProximityProtocolConnected = false;
+    m_ProximityRestartTimer.stop();
+    m_ProximityRestartPolicy.updateEligibility(false);
+    if (m_pProximityOverrideAction != NULL) {
+        m_pProximityOverrideAction->setText(tr("Connect Anyway"));
+    }
+    configureProximityController();
+    if (proximityClientEnabled()) {
+        return;
+    }
+#endif
+    stopBarrierChild();
+}
+
+void MainWindow::stopBarrierChild(bool proximityPolicyStop)
+{
+    appendLogDebug("stopping process");
+    resetTopologyStatusSession();
+#if defined(Q_OS_MAC)
+    if (proximityPolicyStop &&
+        appConfig().processMode() == Desktop &&
+        barrierProcess() != NULL &&
+        barrierProcess()->state() != QProcess::NotRunning) {
+        m_ProximityProcessExitTracker.expectPolicyStop(
+            proximityChildGeneration(barrierProcess()));
+    }
+    m_ProximityStoppingChild = true;
+#else
+    Q_UNUSED(proximityPolicyStop);
+#endif
 
     if (appConfig().processMode() == Service)
     {
@@ -824,6 +1647,12 @@ void MainWindow::stopBarrier()
     {
         stopDesktop();
     }
+#if defined(Q_OS_MAC)
+    m_ProximityStoppingChild = false;
+    m_ProximityChildRunning = false;
+    m_ProximityProtocolConnected = false;
+    m_ProximityRunningEndpoint.clear();
+#endif
 
     setBarrierState(barrierDisconnected);
 
@@ -838,6 +1667,16 @@ void MainWindow::stopBarrier()
     m_AlreadyHidden = false;
 }
 
+bool MainWindow::isBarrierChildRunning() const
+{
+#if defined(Q_OS_MAC)
+    return m_ProximityChildRunning;
+#else
+    return m_pBarrier != NULL &&
+           m_pBarrier->state() != QProcess::NotRunning;
+#endif
+}
+
 void MainWindow::stopService()
 {
     // send empty command to stop service from launching anything.
@@ -850,6 +1689,9 @@ void MainWindow::stopDesktop()
     if (!barrierProcess()) {
         return;
     }
+#if defined(Q_OS_MAC)
+    const quint64 generation = proximityChildGeneration(barrierProcess());
+#endif
 
     appendLogInfo("stopping barrier desktop process");
 
@@ -857,21 +1699,89 @@ void MainWindow::stopDesktop()
         // try to shutdown child gracefully
         barrierProcess()->write(&ShutdownCh, 1);
         barrierProcess()->waitForFinished(5000);
-        barrierProcess()->close();
     }
+    processLogChunk(
+        QString::fromLocal8Bit(barrierProcess()->readAllStandardOutput()),
+        m_StdoutLogBuffer);
+    processLogChunk(
+        QString::fromLocal8Bit(barrierProcess()->readAllStandardError()),
+        m_StderrLogBuffer);
+    flushPendingLogChunks();
+    barrierProcess()->close();
 
     delete barrierProcess();
     setBarrierProcess(NULL);
+#if defined(Q_OS_MAC)
+    m_ProximityProcessExitTracker.forgetProcess(generation);
+#endif
 }
 
-void MainWindow::barrierFinished(int exitCode, QProcess::ExitStatus)
+void MainWindow::barrierFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
-    if (exitCode == 0) {
+    logOutput();
+    logError();
+    flushPendingLogChunks();
+
+#if defined(Q_OS_MAC)
+    const barrier::ProximityProcessExitClassification exitClassification =
+        m_ProximityProcessExitTracker.classifyAndConsume(
+            proximityChildGeneration(qobject_cast<QProcess*>(sender())),
+            exitCode, exitStatus == QProcess::CrashExit, SIGKILL);
+    const bool stoppedByReconciliation =
+        exitClassification.expectedPolicyStop;
+    const bool expectedForcedStop =
+        exitClassification.logDisposition ==
+        barrier::ProximityProcessExitLogDisposition::ExpectedPolicyStop;
+#else
+    Q_UNUSED(exitStatus);
+    const bool expectedForcedStop = false;
+#endif
+
+    if (expectedForcedStop) {
+        appendLogInfo(QString("process was force-stopped by proximity policy"));
+    }
+    else if (exitCode == 0) {
         appendLogInfo(QString("process exited normally"));
     }
     else {
         appendLogError(QString("process exited with error code: %1").arg(exitCode));
     }
+    resetTopologyStatusSession();
+#if defined(Q_OS_MAC)
+    m_ProximityChildRunning = false;
+    m_ProximityProtocolConnected = false;
+    m_ProximityRunningEndpoint.clear();
+    if (stoppedByReconciliation) {
+        return;
+    }
+    if (proximityClientEnabled()) {
+        barrier::ProximityDecision decision =
+            m_ProximityPolicy.evaluate(currentProximityInputs());
+        m_ProximityRestartPolicy.updateEligibility(
+            decision.canStartChild);
+        switch (m_ProximityRestartPolicy.childExitedUnexpectedly()) {
+        case barrier::ProximityChildExitAction::RetryAfterDelay:
+            appendLogInfo(
+                QString("proximity client exited; retrying once in 1 second"));
+            setBarrierState(barrierConnecting);
+            updateProximityStatus(barrier::ProximityPolicyState::Starting);
+            m_ProximityRestartTimer.start();
+            break;
+        case barrier::ProximityChildExitAction::Suppress:
+            appendLogError(
+                QString("proximity client exited again; suppressing retries "
+                        "until the proximity gates or user intent reset"));
+            setBarrierState(barrierConnecting);
+            updateProximityStatus(
+                barrier::ProximityPolicyState::RetrySuppressed);
+            break;
+        case barrier::ProximityChildExitAction::Ignore:
+            reconcileProximityClient();
+            break;
+        }
+        return;
+    }
+#endif
 
     if (m_ExpectedRunningState == kStarted) {
         QTimer::singleShot(1000, this, SLOT(startBarrier()));
@@ -1013,6 +1923,9 @@ void MainWindow::changeEvent(QEvent* event)
             retranslateMenuBar();
 
             proofreadInfo();
+#if defined(Q_OS_MAC)
+            reconcileProximityClient();
+#endif
 
             break;
         }
@@ -1050,22 +1963,99 @@ void MainWindow::updateZeroconfService()
                 m_pZeroconfService = NULL;
             }
 
-            if (m_AppConfig->autoConfig() || barrier_type() == BarrierType::Server) {
-                m_pZeroconfService = new ZeroconfService(this);
+            bool proximityDiscoveryRequired = false;
+            bool clientSignalSharingRequired = false;
+#if defined(Q_OS_MAC)
+            proximityDiscoveryRequired = proximityClientEnabled();
+            barrier::ProximityPairing pairing;
+            clientSignalSharingRequired =
+                barrier_type() == BarrierType::Client &&
+                m_ProximityConfig.pairing(pairing) &&
+                pairing.signalSharingEnabled;
+#endif
+            const ZeroconfService::Requirements requirements =
+                ZeroconfService::requirements(
+                    m_AppConfig->autoConfig(),
+                    barrier_type() == BarrierType::Server,
+                    proximityDiscoveryRequired,
+                    clientSignalSharingRequired);
+            if (requirements.active) {
+                m_pZeroconfService = new ZeroconfService(
+                    this, requirements.publishClientService);
             }
         }
     }
 }
 
-void MainWindow::serverDetected(const QString name)
+void MainWindow::serverDetected(const QList<ZeroconfRecord>& records)
 {
-    if (m_pComboServerList->findText(name) == -1) {
-        // Note: the first added item triggers startBarrier
-        m_pComboServerList->addItem(name);
+    m_ZeroconfRecords = records;
+    emit zeroconfRecordsChanged();
+    QList<ZeroconfRecord> visibleRecords;
+    if (barrier_type() == BarrierType::Client &&
+        m_ProximityConfig.clientGatingEnabled()) {
+        barrier::ProximityPairing pairing;
+        if (m_ProximityConfig.pairing(pairing)) {
+            for (const ZeroconfRecord& record : records) {
+                if (record.matchesProximityServer(pairing.proximityId)) {
+                    visibleRecords.append(record);
+                }
+            }
+        }
+    }
+    else {
+        visibleRecords = records;
     }
 
-    if (m_pComboServerList->count() > 1) {
-        m_pComboServerList->show();
+    const QString previousKey =
+        m_pComboServerList->currentData(Qt::UserRole + 2).toString();
+    const ZeroconfRecord previousRecord =
+        m_pComboServerList->currentData(Qt::UserRole + 3)
+            .value<ZeroconfRecord>();
+    const QString previousEndpoint =
+        previousRecord.barrierEndpoint(m_AppConfig->port());
+
+    QSignalBlocker blocker(m_pComboServerList);
+    m_pComboServerList->clear();
+    int selectedIndex = -1;
+    for (const ZeroconfRecord& record : visibleRecords) {
+        if (!record.hasResolvedService()) {
+            continue;
+        }
+        const QString key = record.serviceName + QChar(0x1f) +
+                            record.registeredType + QChar(0x1f) +
+                            record.replyDomain;
+        const QString label = record.serviceName.isEmpty()
+                                  ? record.hostName
+                                  : record.serviceName;
+        const int index = m_pComboServerList->count();
+        m_pComboServerList->addItem(label, record.hostName);
+        m_pComboServerList->setItemData(index, key, Qt::UserRole + 2);
+        m_pComboServerList->setItemData(
+            index, QVariant::fromValue(record), Qt::UserRole + 3);
+        if (key == previousKey) {
+            selectedIndex = index;
+        }
+    }
+    if (selectedIndex >= 0) {
+        m_pComboServerList->setCurrentIndex(selectedIndex);
+    }
+
+    m_pComboServerList->setVisible(m_pComboServerList->count() > 1);
+    const ZeroconfRecord currentRecord =
+        m_pComboServerList->currentData(Qt::UserRole + 3)
+            .value<ZeroconfRecord>();
+    const QString currentEndpoint =
+        currentRecord.barrierEndpoint(m_AppConfig->port());
+#if defined(Q_OS_MAC)
+    if (proximityClientEnabled()) {
+        reconcileProximityClient();
+        return;
+    }
+#endif
+    if (!currentEndpoint.isEmpty() && currentEndpoint != previousEndpoint &&
+        m_pCheckBoxAutoConfig->isChecked()) {
+        restartBarrier();
     }
 }
 
@@ -1127,6 +2117,9 @@ void MainWindow::on_m_pGroupClient_toggled(bool on)
     m_pGroupServer->setChecked(!on);
     if (on) {
         updateZeroconfService();
+#if defined(Q_OS_MAC)
+        configureProximityController();
+#endif
     }
 }
 
@@ -1135,6 +2128,9 @@ void MainWindow::on_m_pGroupServer_toggled(bool on)
     m_pGroupClient->setChecked(!on);
     if (on) {
         updateZeroconfService();
+#if defined(Q_OS_MAC)
+        configureProximityController();
+#endif
     }
 }
 
@@ -1201,11 +2197,75 @@ void MainWindow::autoAddScreen(const QString name)
     }
 }
 
+bool MainWindow::reloadRunningServerConfig(QString& error)
+{
+    if (m_ExpectedRunningState != kStarted ||
+        barrier_type() != BarrierType::Server) {
+        return true;
+    }
+    if (!m_pRadioInternalConfig->isChecked() ||
+        m_pTempConfigFile == NULL) {
+        error = tr("The display profile was saved. Select the internal "
+                   "configuration and save again to apply it live.");
+        return false;
+    }
+
+    QFile configFile(m_pTempConfigFile->fileName());
+    if (!configFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        error = tr("The display profile was saved, but the running server "
+                   "configuration could not be updated. Check file permissions "
+                   "and save again.");
+        return false;
+    }
+    serverConfig().save(configFile);
+    configFile.flush();
+    const bool configWritten = configFile.error() == QFile::NoError;
+    configFile.close();
+    if (!configWritten) {
+        error = tr("The display profile was saved, but the running server "
+                   "configuration could not be written completely. Check the "
+                   "available disk space and save again.");
+        return false;
+    }
+
+    if (appConfig().processMode() == Service) {
+        if (!m_IpcClient.sendReload()) {
+            error = tr("The display profile was saved, but the Barrier service "
+                       "is not connected. Reconnect the service and save again.");
+            return false;
+        }
+        return true;
+    }
+
+#if defined(Q_OS_UNIX)
+    if (barrierProcess() == NULL ||
+        barrierProcess()->state() == QProcess::NotRunning ||
+        barrierProcess()->processId() <= 0 ||
+        ::kill(static_cast<pid_t>(barrierProcess()->processId()), SIGHUP) != 0) {
+        error = tr("The display profile was saved, but the running server "
+                   "could not be signaled. Verify it is running and save again.");
+        return false;
+    }
+    return true;
+#else
+    error = tr("The display profile was saved, but live desktop reload is "
+               "not supported on this platform.");
+    return false;
+#endif
+}
+
 void MainWindow::showConfigureServer(const QString& message)
 {
     ServerConfigDialog dlg(this, serverConfig(), appConfig().screenName());
     dlg.message(message);
-    dlg.exec();
+    if (dlg.exec() == QDialog::Accepted &&
+        serverConfig().hasCurrentTopology()) {
+        QString reloadError;
+        if (!reloadRunningServerConfig(reloadError)) {
+            QMessageBox::warning(
+                this, tr("Display profile saved"), reloadError);
+        }
+    }
 }
 
 void MainWindow::on_m_pButtonConfigureServer_clicked()
@@ -1384,6 +2444,12 @@ void MainWindow::promptAutoConfig()
 
 void MainWindow::on_m_pComboServerList_currentIndexChanged(QString )
 {
+#if defined(Q_OS_MAC)
+    if (proximityClientEnabled()) {
+        reconcileProximityClient();
+        return;
+    }
+#endif
     if (m_pComboServerList->count() != 0) {
         restartBarrier();
     }

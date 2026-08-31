@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ProximitySettingsDialogBase</class>
+ <widget class="QDialog" name="ProximitySettingsDialogBase">
+  <property name="minimumSize">
+   <size><width>520</width><height>660</height></size>
+  </property>
+  <property name="windowTitle"><string>Proximity</string></property>
+  <property name="styleSheet"><string notr="true">QPushButton { min-height: 32px; }</string></property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing"><number>12</number></property>
+   <property name="leftMargin"><number>16</number></property>
+   <property name="topMargin"><number>16</number></property>
+   <property name="rightMargin"><number>16</number></property>
+   <property name="bottomMargin"><number>16</number></property>
+   <item>
+    <widget class="QLabel" name="introLabel">
+     <property name="text"><string>Use Bluetooth proximity to advertise this server or connect this client only while its paired server is nearby.</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="serverGroup">
+     <property name="title"><string>Server proximity</string></property>
+     <layout class="QVBoxLayout" name="serverLayout">
+      <property name="spacing"><number>8</number></property>
+      <item><widget class="QCheckBox" name="advertisingCheckBox"><property name="text"><string>Enable proximity advertising</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+      <item><widget class="QLabel" name="serverIdentityStatusLabel"><property name="text"><string>Pairing identity unavailable</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+      <item><widget class="QLabel" name="wakeInfoLabel"><property name="text"><string>Bluetooth pairing identifies this server. Sleeping clients wake separately over Bonjour network wake and require Wake for network access.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>40</number></property></widget></item>
+      <item><widget class="QLabel" name="nearbyClientsLabel"><property name="text"><string>Associated nearby clients:</string></property><property name="buddy"><cstring>nearbyClientsTree</cstring></property></widget></item>
+      <item><widget class="QTreeWidget" name="nearbyClientsTree"><property name="accessibleName"><string>Associated nearby clients and signal strength</string></property><property name="minimumHeight"><number>160</number></property><property name="rootIsDecorated"><bool>false</bool></property><property name="alternatingRowColors"><bool>true</bool></property><column><property name="text"><string>Client</string></property></column><column><property name="text"><string>Signal</string></property></column><column><property name="text"><string>Status</string></property></column><column><property name="text"><string>Last seen</string></property></column></widget></item>
+      <item><widget class="QLabel" name="clientPresenceStatusLabel"><property name="text"><string>Opted-in clients appear after completing one Barrier connection.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>40</number></property></widget></item>
+      <item><widget class="QPushButton" name="resetIdentityButton"><property name="text"><string>Reset pairing identity</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="clientGroup">
+     <property name="title"><string>Client proximity</string></property>
+     <layout class="QVBoxLayout" name="clientLayout">
+      <property name="spacing"><number>8</number></property>
+      <item><widget class="QCheckBox" name="gatingCheckBox"><property name="text"><string>Enable proximity-gated connection</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+      <item><widget class="QCheckBox" name="signalSharingCheckBox"><property name="text"><string>Share nearby signal with paired server</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+      <item><widget class="QLabel" name="signalSharingInfoLabel"><property name="text"><string>When enabled, this client advertises an opaque pair-scoped routing ID over Bluetooth while Barrier is running. Nearby devices can link that Bluetooth signal to this client’s local Bonjour record; it is never used for authentication.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>80</number></property></widget></item>
+      <item><widget class="QLabel" name="nearbyServersLabel"><property name="text"><string>Nearby Barrier servers:</string></property><property name="buddy"><cstring>nearbyServersList</cstring></property></widget></item>
+      <item><widget class="QListWidget" name="nearbyServersList"><property name="accessibleName"><string>Nearby Barrier servers</string></property><property name="minimumHeight"><number>96</number></property></widget></item>
+      <item><widget class="QLabel" name="pairedServerLabel"><property name="text"><string>Paired server: None</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>20</number></property></widget></item>
+      <item><widget class="QLabel" name="filteredRssiLabel"><property name="text"><string>Filtered signal: Unavailable</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>20</number></property></widget></item>
+      <item><widget class="QLabel" name="thresholdHelpLabel"><property name="text"><string>Set the signal range for this pairing. A less-negative value is stronger. The departure threshold starts the sustained-departure countdown and must remain at least 15 dB weaker than the connect threshold.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>80</number></property></widget></item>
+      <item>
+       <layout class="QGridLayout" name="thresholdGridLayout">
+        <property name="horizontalSpacing"><number>8</number></property>
+        <property name="verticalSpacing"><number>8</number></property>
+        <item row="0" column="0"><widget class="QLabel" name="connectDbmLabel"><property name="text"><string>Connect signal:</string></property><property name="buddy"><cstring>connectDbmSpinBox</cstring></property></widget></item>
+        <item row="0" column="1"><widget class="QSpinBox" name="connectDbmSpinBox"><property name="accessibleName"><string>Connect signal threshold</string></property><property name="minimum"><number>-100</number></property><property name="maximum"><number>-30</number></property><property name="value"><number>-75</number></property><property name="suffix"><string> dBm</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+        <item row="1" column="0"><widget class="QLabel" name="departureDbmLabel"><property name="text"><string>Departure signal:</string></property><property name="buddy"><cstring>departureDbmSpinBox</cstring></property></widget></item>
+        <item row="1" column="1"><widget class="QSpinBox" name="departureDbmSpinBox"><property name="accessibleName"><string>Departure signal threshold</string></property><property name="minimum"><number>-100</number></property><property name="maximum"><number>-30</number></property><property name="value"><number>-90</number></property><property name="suffix"><string> dBm</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+        <item row="0" column="2" rowspan="2"><widget class="QPushButton" name="resetThresholdsButton"><property name="text"><string>Reset defaults</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+       </layout>
+      </item>
+      <item><widget class="QLabel" name="thresholdValidationLabel"><property name="text"><string>Connect must be at least 15 dB stronger than departure.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>20</number></property></widget></item>
+      <item><widget class="QLabel" name="pairingStatusLabel"><property name="text"><string>Select a nearby server to pair.</string></property><property name="wordWrap"><bool>true</bool></property><property name="minimumHeight"><number>20</number></property></widget></item>
+      <item>
+       <layout class="QHBoxLayout" name="clientButtonsLayout">
+        <property name="spacing"><number>8</number></property>
+        <item><widget class="QPushButton" name="pairButton"><property name="text"><string>Pair</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+        <item><widget class="QPushButton" name="forgetButton"><property name="text"><string>Forget pairing</string></property><property name="minimumHeight"><number>32</number></property></widget></item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>advertisingCheckBox</tabstop>
+  <tabstop>nearbyClientsTree</tabstop>
+  <tabstop>resetIdentityButton</tabstop>
+  <tabstop>gatingCheckBox</tabstop>
+  <tabstop>signalSharingCheckBox</tabstop>
+  <tabstop>nearbyServersList</tabstop>
+  <tabstop>connectDbmSpinBox</tabstop>
+  <tabstop>departureDbmSpinBox</tabstop>
+  <tabstop>resetThresholdsButton</tabstop>
+  <tabstop>pairButton</tabstop>
+  <tabstop>forgetButton</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

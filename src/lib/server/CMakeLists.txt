@@ -17,6 +17,13 @@
 file(GLOB headers "*.h")
 file(GLOB sources "*.cpp")
 
+# Keep newly added source visible to already-configured build trees whose glob
+# cache predates the file.
+if (NOT "ClientWakeRequest.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/ClientWakeRequest.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/ClientWakeRequest.cpp")
+endif()
+
 if (BARRIER_ADD_HEADERS)
     list(APPEND sources ${headers})
 endif()

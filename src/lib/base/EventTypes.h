@@ -327,17 +327,26 @@ private:
 class OSXScreenEvents : public EventTypes {
 public:
     OSXScreenEvents() :
-        m_confirmSleep(Event::kUnknown) { }
+        m_confirmSleep(Event::kUnknown),
+        m_displayRefreshRetryRequested(Event::kUnknown) { }
 
     //! @name accessors
     //@{
 
     Event::Type        confirmSleep();
 
+    //! Get display-refresh retry request event type
+    /*!
+    Returns the event used to marshal a CoreGraphics refresh failure onto
+    the event-loop thread before creating a retry timer.
+    */
+    Event::Type        displayRefreshRetryRequested();
+
     //@}
 
 private:
     Event::Type        m_confirmSleep;
+    Event::Type        m_displayRefreshRetryRequested;
 };
 
 class ClientListenerEvents : public EventTypes {
@@ -656,6 +665,7 @@ class IScreenEvents : public EventTypes {
 public:
     IScreenEvents() :
         m_error(Event::kUnknown),
+        m_displayReconfigurationStarted(Event::kUnknown),
         m_shapeChanged(Event::kUnknown),
         m_suspend(Event::kUnknown),
         m_resume(Event::kUnknown) { }
@@ -669,6 +679,14 @@ public:
     failed for some reason (e.g. the X Windows server died).
     */
     Event::Type        error();
+
+    //! Get display reconfiguration started event type
+    /*!
+    Returns the display reconfiguration started event type.  This is sent
+    before a platform refreshes display geometry so routing can be suspended
+    without waiting for a changed snapshot.
+    */
+    Event::Type        displayReconfigurationStarted();
 
     //! Get shape changed event type
     /*!
@@ -695,6 +713,7 @@ public:
 
 private:
     Event::Type        m_error;
+    Event::Type        m_displayReconfigurationStarted;
     Event::Type        m_shapeChanged;
     Event::Type        m_suspend;
     Event::Type        m_resume;

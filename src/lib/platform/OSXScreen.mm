@@ -40,6 +40,7 @@
 #include "base/TMethodEventJob.h"
 
 #include <math.h>
+#include <stdexcept>
 #include <mach-o/dyld.h>
 #include <AvailabilityMacros.h>
 #include <IOKit/hidsystem/event_status_driver.h>
@@ -103,9 +104,71 @@ const CGEventField kMagicMouseSpacesSwipeRawXField =
 const SInt32 kSpacesSwipeSyntheticWheelDelta = 30000;
 //! Marks a mouseWheel packet as a Spaces swipe command.
 const SInt32 kSpacesSwipeSyntheticWheelSentinel = -31415;
+//! Fixed, bounded retry delay after a primary CoreGraphics query failure.
+const double kDisplayRefreshRetrySeconds = 0.25;
 //! Extra test-build log sink that does not depend on the GUI log window.
 const char kSwipeTestDiagnosticsLogPath[] = "/tmp/barrier-macos-scroll-diagnostics.log";
 OSXScreen::SpacesSwipeSourceState g_spacesSwipeSourceState;
+
+typedef CGError (*DisplayListQuery)(CGDisplayCount,
+	CGDirectDisplayID*, CGDisplayCount*);
+
+struct DisplayQueryResult {
+	bool succeeded;
+	std::vector<CGDirectDisplayID> displays;
+};
+
+DisplayQueryResult
+queryDisplayList(DisplayListQuery query)
+{
+	DisplayQueryResult result = {false, {}};
+	CGDisplayCount count = 0;
+	if (query(0, NULL, &count) != CGDisplayNoErr) {
+		return result;
+	}
+
+	result.succeeded = true;
+	if (count == 0) {
+		return result;
+	}
+
+	result.displays.resize(count);
+	CGDisplayCount actualCount = 0;
+	if (query(count, result.displays.data(), &actualCount) != CGDisplayNoErr) {
+		result.succeeded = false;
+		result.displays.clear();
+		return result;
+	}
+
+	// The display set can shrink between the count and data queries.  A
+	// concurrent increase is bounded by the capacity passed to CoreGraphics.
+	if (actualCount < count) {
+		result.displays.resize(actualCount);
+	}
+	return result;
+}
+
+std::vector<CGDirectDisplayID>
+drawableDisplayList(const std::vector<CGDirectDisplayID>& queriedDisplays,
+	bool filterMirrorFollowers)
+{
+	std::vector<CGDirectDisplayID> displays;
+	displays.reserve(queriedDisplays.size());
+	for (CGDirectDisplayID display : queriedDisplays) {
+		const CGRect bounds = CGDisplayBounds(display);
+		// Online-display queries may include hardware-mirror followers, which
+		// are not independently drawable.  Active-display queries already
+		// return a drawable representative for a mirror set, but any display
+		// ID can become stale between the list query and the geometry read.
+		if ((filterMirrorFollowers &&
+			 CGDisplayMirrorsDisplay(display) != kCGNullDirectDisplay) ||
+			bounds.size.width <= 0 || bounds.size.height <= 0) {
+			continue;
+		}
+		displays.push_back(display);
+	}
+	return displays;
+}
 
 bool
 isScrollDiagnosticsEnabled()
@@ -638,6 +701,20 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	PlatformScreen(events),
 	m_isPrimary(isPrimary),
 	m_isOnScreen(m_isPrimary),
+	m_displayID(kCGNullDirectDisplay),
+	m_x(0),
+	m_y(0),
+	m_w(0),
+	m_h(0),
+	m_xCenter(0),
+	m_yCenter(0),
+	m_displayReconfigurationGeneration(0),
+	m_displayConfigurationInProgress(false),
+	m_displayRefreshRetryTimer(NULL),
+	m_displayRefreshRetryEventTarget(0),
+	m_displayRefreshRetryArmed(false),
+	m_displayRefreshRetryRequestPending(false),
+	m_displayRefreshRetryHandlerInstalled(false),
 	m_cursorPosValid(false),
 	MouseButtonEventMap(NumButtonIDs),
 	m_cursorHidden(false),
@@ -660,6 +737,7 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	m_activeModifierHotKeyMask(0),
 	m_eventTapPort(nullptr),
 	m_eventTapRLSR(nullptr),
+	m_eventTapRunLoop(nullptr),
 	m_lastClickTime(0),
 	m_clickState(1),
 	m_lastSingleClickXCursor(0),
@@ -672,6 +750,22 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	m_impl(NULL)
 {
 	try {
+		// Install the thread-safe platform buffer before any capture or
+		// CoreGraphics callback can enqueue an event. Replacing it afterward
+		// can discard a live-reset retry request while leaving its coalescing
+		// bit set, permanently preventing another retry from being queued.
+		m_events->adoptBuffer(new SimpleEventQueueBuffer());
+
+		m_events->adoptHandler(
+			m_events->forOSXScreen().displayRefreshRetryRequested(),
+			&m_displayRefreshRetryEventTarget,
+			new TMethodEventJob<OSXScreen>(
+				this, &OSXScreen::handleDisplayRefreshRetryRequest));
+		m_displayRefreshRetryHandlerInstalled = true;
+		m_events->adoptHandler(
+			Event::kTimer, &m_displayRefreshRetryEventTarget,
+			new TMethodEventJob<OSXScreen>(
+				this, &OSXScreen::handleDisplayRefreshRetry));
 		m_displayID   = CGMainDisplayID();
 		updateScreenShape(m_displayID, 0);
 		m_screensaver = new OSXScreenSaver(m_events, getEventTarget());
@@ -726,6 +820,7 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
         m_pmWatchThread = new Thread([this](){ watchSystemPowerThread(); });
 	}
 	catch (...) {
+		destroyDisplayRefreshRetry();
 		m_events->removeHandler(m_events->forOSXScreen().confirmSleep(),
 								getEventTarget());
 		if (m_switchEventHandlerRef != 0) {
@@ -744,19 +839,15 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 							new TMethodEventJob<OSXScreen>(this,
 								&OSXScreen::handleSystemEvent));
 
-	// install the platform event queue.
-	// NOTE: use the thread-safe in-memory buffer instead of
-	// OSXEventQueueBuffer.  The latter relies on Carbon
-	// PostEventToQueue(), which dereferences an invalid handle when
-	// called from the CGEventTap and socket-multiplexer threads on
-	// modern macOS (SIGSEGV at offset 0x28), and a thread-local queue
-	// otherwise silently never delivers.  SimpleEventQueueBuffer is a
-	// mutex/condvar deque with no Carbon dependency.
-	m_events->adoptBuffer(new SimpleEventQueueBuffer());
 }
 
 OSXScreen::~OSXScreen()
 {
+	// Stop CoreGraphics from re-arming a refresh timer while teardown is in
+	// progress.  The callback was previously removed only after most members
+	// had already been dismantled.
+	CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallback, this);
+	destroyDisplayRefreshRetry();
 	disable();
 	m_events->adoptBuffer(NULL);
 	m_events->removeHandler(Event::kSystem, m_events->getSystemTarget());
@@ -785,8 +876,6 @@ OSXScreen::~OSXScreen()
 
 	RemoveEventHandler(m_switchEventHandlerRef);
 
-	CGDisplayRemoveReconfigurationCallback(displayReconfigurationCallback, this);
-
 	delete m_keyState;
 	delete m_screensaver;
 
@@ -812,6 +901,7 @@ OSXScreen::getClipboard(ClipboardID, IClipboard* dst) const
 void
 OSXScreen::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
 {
+	std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
 	x = m_x;
 	y = m_y;
 	w = m_w;
@@ -892,11 +982,126 @@ std::string displayNameForID(CGDirectDisplayID displayID)
 	return name;
 }
 
+std::string stableDisplayIdForID(CGDirectDisplayID displayID)
+{
+	CFUUIDRef uuid = CGDisplayCreateUUIDFromDisplayID(displayID);
+	if (uuid == NULL) {
+		return std::string();
+	}
+	CFStringRef uuidString = CFUUIDCreateString(kCFAllocatorDefault, uuid);
+	CFRelease(uuid);
+	if (uuidString == NULL) {
+		return std::string();
+	}
+
+	char buffer[64] = {};
+	const bool converted = CFStringGetCString(
+		uuidString, buffer, sizeof(buffer), kCFStringEncodingUTF8);
+	CFRelease(uuidString);
+	if (!converted) {
+		return std::string();
+	}
+
+	return OSXScreen::normalizeDisplayIdentifier(buffer);
+}
+
 } // namespace
+OSXScreen::DisplayRefreshDecision
+OSXScreen::decideDisplayRefresh(DisplayRefreshRole role,
+	bool hasValidSnapshot,
+	bool activeQuerySucceeded, CGDisplayCount activeDisplayCount,
+	bool onlineQuerySucceeded, CGDisplayCount onlineDisplayCount)
+{
+	if (activeQuerySucceeded && activeDisplayCount > 0) {
+		return {DisplayRefreshSource::Active, false, false};
+	}
+	if (role == DisplayRefreshRole::PrimaryServer) {
+		if (!activeQuerySucceeded) {
+			return {DisplayRefreshSource::None, hasValidSnapshot, true};
+		}
+		return {DisplayRefreshSource::None, false, false};
+	}
+	if (hasValidSnapshot) {
+		return {DisplayRefreshSource::None, true, false};
+	}
+	if (onlineQuerySucceeded && onlineDisplayCount > 0) {
+		return {DisplayRefreshSource::Online, false, false};
+	}
+	return {DisplayRefreshSource::None, false, false};
+}
+
+bool
+OSXScreen::displayReconfigurationCaptureReady(
+	CGDisplayChangeSummaryFlags flags)
+{
+	return (flags & kCGDisplayBeginConfigurationFlag) == 0;
+}
+
+bool
+OSXScreen::displayRefreshGenerationIsCurrent(
+	std::uint64_t capturedGeneration, std::uint64_t currentGeneration)
+{
+	return capturedGeneration == currentGeneration;
+}
+
+bool
+OSXScreen::eventTapDisableRequiresReenable(CGEventType type)
+{
+	return type == kCGEventTapDisabledByTimeout ||
+		type == kCGEventTapDisabledByUserInput;
+}
+
+CFRunLoopRef
+OSXScreen::selectEventTapRunLoop(CFRunLoopRef currentRunLoop,
+	CFRunLoopRef mainRunLoop)
+{
+	return mainRunLoop != nullptr ? mainRunLoop : currentRunLoop;
+}
+
+std::string
+OSXScreen::normalizeDisplayIdentifier(const std::string& identifier)
+{
+	std::string normalized(identifier);
+	for (char& character : normalized) {
+		if (character >= 'A' && character <= 'Z') {
+			character = static_cast<char>(character - 'A' + 'a');
+		}
+	}
+	return normalized;
+}
+
+
+barrier::DisplayTopology
+OSXScreen::topologyFromDisplayRecords(
+	const std::vector<TopologyDisplayRecord>& displays)
+{
+	barrier::DisplayTopology topology;
+	topology.displays.reserve(displays.size());
+	for (const TopologyDisplayRecord& display : displays) {
+		const double quarterTurns = round(display.rotationDegrees / 90.0);
+		const double normalizedRotation = quarterTurns * 90.0;
+		if (fabs(display.rotationDegrees - normalizedRotation) > 0.01) {
+			throw std::invalid_argument("display rotation is not a quarter turn");
+		}
+		int rotation = static_cast<int>(normalizedRotation) % 360;
+		if (rotation < 0) {
+			rotation += 360;
+		}
+		topology.displays.push_back({
+			normalizeDisplayIdentifier(display.stableId),
+			display.logicalBounds,
+			rotation,
+			display.primary
+		});
+	}
+	topology.validate();
+	return topology.normalized();
+}
 
 void
 OSXScreen::getDisplays(std::vector<ScreenRect>& displays) const
 {
+	std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
 	// read the snapshot captured during the last geometry refresh; the
 	// rectangles are ordered exactly like the names below
 	displays.clear();
@@ -906,10 +1111,18 @@ OSXScreen::getDisplays(std::vector<ScreenRect>& displays) const
 		displays.push_back(it->m_rect);
 	}
 }
+barrier::DisplayTopology
+OSXScreen::getDisplayTopology() const
+{
+	std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+	return m_displayTopology;
+}
+
 
 void
 OSXScreen::getDisplayNames(std::vector<std::string>& names) const
 {
+	std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
 	// read the same snapshot as getDisplays(), so names always line up
 	// with the DDIS rectangles -- no independent display query, no
 	// count matching
@@ -987,6 +1200,7 @@ OSXScreen::isAnyMouseButtonDown(UInt32& buttonID) const
 void
 OSXScreen::getCursorCenter(SInt32& x, SInt32& y) const
 {
+	std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
 	x = m_xCenter;
 	y = m_yCenter;
 }
@@ -1395,7 +1609,12 @@ OSXScreen::showCursor()
 
 	CFRelease(propertyString);
 
-	CGError error = CGDisplayShowCursor(m_displayID);
+	CGDirectDisplayID displayID;
+	{
+		std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+		displayID = m_displayID;
+	}
+	CGError error = CGDisplayShowCursor(displayID);
 	if (error != kCGErrorSuccess) {
 		LOG((CLOG_ERR "failed to show cursor, error=%d", error));
 	}
@@ -1422,7 +1641,12 @@ OSXScreen::hideCursor()
 
 	CFRelease(propertyString);
 
-	CGError error = CGDisplayHideCursor(m_displayID);
+	CGDirectDisplayID displayID;
+	{
+		std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+		displayID = m_displayID;
+	}
+	CGError error = CGDisplayHideCursor(displayID);
 	if (error != kCGErrorSuccess) {
 		LOG((CLOG_ERR "failed to hide cursor, error=%d", error));
 	}
@@ -1461,7 +1685,10 @@ OSXScreen::enable()
 		}
 
 		// warp the mouse to the cursor center
-		fakeMouseMove(m_xCenter, m_yCenter);
+		SInt32 centerX;
+		SInt32 centerY;
+		getCursorCenter(centerX, centerY);
+		fakeMouseMove(centerX, centerY);
 
                 // there may be a better way to do this, but we register an event handler even if we're
                 // not on the primary display (acting as a client). This way, if a local event comes in
@@ -1474,14 +1701,25 @@ OSXScreen::enable()
 
 	if (!m_eventTapPort) {
 		LOG((CLOG_ERR "failed to create quartz event tap"));
+		return;
 	}
 
 	m_eventTapRLSR = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, m_eventTapPort, 0);
 	if (!m_eventTapRLSR) {
 		LOG((CLOG_ERR "failed to create a CFRunLoopSourceRef for the quartz event tap"));
+		return;
 	}
 
-	CFRunLoopAddSource(CFRunLoopGetCurrent(), m_eventTapRLSR, kCFRunLoopDefaultMode);
+	// Power-resume handlers run on Barrier's event-queue worker. That worker
+	// does not pump a Core Foundation run loop, so a tap source attached to
+	// CFRunLoopGetCurrent() there never receives mouse or keyboard events.
+	// The Cocoa loop always runs on the process main thread.
+	m_eventTapRunLoop = selectEventTapRunLoop(
+		CFRunLoopGetCurrent(), CFRunLoopGetMain());
+	CFRetain(m_eventTapRunLoop);
+	CFRunLoopAddSource(m_eventTapRunLoop, m_eventTapRLSR,
+		kCFRunLoopDefaultMode);
+	CFRunLoopWakeUp(m_eventTapRunLoop);
 }
 
 void
@@ -1494,9 +1732,17 @@ OSXScreen::disable()
 	// FIXME -- stop watching jump zones, stop capturing input
 
 	if (m_eventTapRLSR) {
-		CFRunLoopRemoveSource(CFRunLoopGetCurrent(), m_eventTapRLSR, kCFRunLoopDefaultMode);
+		if (m_eventTapRunLoop) {
+			CFRunLoopRemoveSource(m_eventTapRunLoop, m_eventTapRLSR,
+				kCFRunLoopDefaultMode);
+			CFRunLoopWakeUp(m_eventTapRunLoop);
+		}
 		CFRelease(m_eventTapRLSR);
 		m_eventTapRLSR = nullptr;
+	}
+	if (m_eventTapRunLoop) {
+		CFRelease(m_eventTapRunLoop);
+		m_eventTapRunLoop = nullptr;
 	}
 
 	if (m_eventTapPort) {
@@ -1723,19 +1969,26 @@ OSXScreen::wakeEnteredDisplay()
 		getCursorPos(x, y);
 	}
 
-	// resolve the entry coordinate against the same ordered snapshot
-	// getDisplays() reports, so the target is the current physical
-	// display under the pointer
-	std::vector<ScreenRect> displays;
-	getDisplays(displays);
-	const int index = displayIndexAt(displays, x, y);
-	if (index < 0) {
+	// Resolve the entry coordinate and physical display identifier from
+	// one display generation.
+	CGDirectDisplayID target = kCGNullDirectDisplay;
+	{
+		std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+		std::vector<ScreenRect> displays;
+		displays.reserve(m_displays.size());
+		for (const DisplayEntry& display : m_displays) {
+			displays.push_back(display.m_rect);
+		}
+		const int index = displayIndexAt(displays, x, y);
+		if (index >= 0) {
+			target = m_displays[index].m_id;
+		}
+	}
+	if (target == kCGNullDirectDisplay) {
 		LOG((CLOG_WARN "wake: entry %d,%d not on any display; "
 		     "skipping wake hold", x, y));
 		return;
 	}
-
-	const CGDirectDisplayID target = m_displays[index].m_id;
 	if (!CGDisplayIsAsleep(target)) {
 		LOG((CLOG_DEBUG1 "wake: target display %u is awake; no wake hold",
 		     target));
@@ -2002,11 +2255,26 @@ bool
 OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 {
 	LOG((CLOG_DEBUG2 "mouse move %+f,%+f", mx, my));
+	SInt32 screenX;
+	SInt32 screenY;
+	SInt32 screenWidth;
+	SInt32 screenHeight;
+	SInt32 centerX;
+	SInt32 centerY;
+	{
+		std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+		screenX = m_x;
+		screenY = m_y;
+		screenWidth = m_w;
+		screenHeight = m_h;
+		centerX = m_xCenter;
+		centerY = m_yCenter;
+	}
 
 	CGFloat x = mx - m_xCursor;
 	CGFloat y = my - m_yCursor;
 
-	if ((x == 0 && y == 0) || (mx == m_xCenter && mx == m_yCenter)) {
+	if ((x == 0 && y == 0) || (mx == centerX && mx == centerY)) {
 		return true;
 	}
 
@@ -2025,7 +2293,7 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 	else {
 		// motion on secondary screen.  warp mouse back to
 		// center.
-		warpCursor(m_xCenter, m_yCenter);
+		warpCursor(centerX, centerY);
 
 		// examine the motion.  if it's about the distance
 		// from the center of the screen to an edge then
@@ -2033,10 +2301,10 @@ OSXScreen::onMouseMove(CGFloat mx, CGFloat my)
 		// ignore (see warpCursorNoFlush() for a further
 		// description).
 		static SInt32 bogusZoneSize = 10;
-		if (-x + bogusZoneSize > m_xCenter - m_x ||
-			 x + bogusZoneSize > m_x + m_w - m_xCenter ||
-			-y + bogusZoneSize > m_yCenter - m_y ||
-			 y + bogusZoneSize > m_y + m_h - m_yCenter) {
+		if (-x + bogusZoneSize > centerX - screenX ||
+			 x + bogusZoneSize > screenX + screenWidth - centerX ||
+			-y + bogusZoneSize > centerY - screenY ||
+			 y + bogusZoneSize > screenY + screenHeight - centerY) {
 			LOG((CLOG_DEBUG "dropped bogus motion %+d,%+d", x, y));
 		}
 		else {
@@ -2149,6 +2417,25 @@ OSXScreen::displayReconfigurationCallback(CGDirectDisplayID displayID, CGDisplay
 
 	if (flags & mask) { /* Something actually did change */
 
+		const bool captureReady = displayReconfigurationCaptureReady(flags);
+		{
+			// Advance the generation before a retry capture can commit. The
+			// final commit checks this under the same mutex, so begin/shape
+			// event ordering cannot be inverted across threads.
+			std::lock_guard<std::mutex> lock(
+				screen->m_displayRefreshGenerationMutex);
+			++screen->m_displayReconfigurationGeneration;
+			screen->m_displayConfigurationInProgress = !captureReady;
+			if (screen->m_isPrimary) {
+				screen->sendEvent(
+					screen->m_events->forIScreen().displayReconfigurationStarted());
+			}
+		}
+		if (!captureReady) {
+			screen->cancelDisplayRefreshRetry();
+			LOG((CLOG_DEBUG1 "event: display configuration began; waiting for post-change callback"));
+			return;
+		}
 		LOG((CLOG_DEBUG1 "event: screen changed shape; refreshing dimensions"));
 		screen->updateScreenShape(displayID, flags);
 	}
@@ -2481,71 +2768,330 @@ OSXScreen::updateScreenShape(const CGDirectDisplayID, const CGDisplayChangeSumma
 }
 
 void
+OSXScreen::scheduleDisplayRefreshRetry()
+{
+	bool enqueueRequest = false;
+	{
+		std::lock_guard<std::mutex> lock(m_displayRefreshRetryMutex);
+		if (!m_isPrimary || !m_displayRefreshRetryHandlerInstalled) {
+			return;
+		}
+		m_displayRefreshRetryArmed = true;
+		if (m_displayRefreshRetryTimer == NULL &&
+			!m_displayRefreshRetryRequestPending) {
+			m_displayRefreshRetryRequestPending = true;
+			enqueueRequest = true;
+		}
+	}
+	if (enqueueRequest) {
+		// CoreGraphics invokes display callbacks outside Barrier's event loop.
+		// A queued event both wakes that loop and makes timer creation single-
+		// threaded with its otherwise-unlocked timer-queue reads.
+		m_events->addEvent(Event(
+			m_events->forOSXScreen().displayRefreshRetryRequested(),
+			&m_displayRefreshRetryEventTarget));
+	}
+}
+
+void
+OSXScreen::cancelDisplayRefreshRetry()
+{
+	// This can be called by CoreGraphics on a non-event-loop thread. Do not
+	// remove a handler or destroy its timer here: EventQueue dispatches raw
+	// handler pointers outside its lock. The stable handler below consumes
+	// the one-shot and discards it when this retry is no longer armed.
+	std::lock_guard<std::mutex> lock(m_displayRefreshRetryMutex);
+	m_displayRefreshRetryArmed = false;
+}
+
+void
+OSXScreen::destroyDisplayRefreshRetry()
+{
+	EventQueueTimer* timer = NULL;
+	bool removeHandler = false;
+	{
+		std::lock_guard<std::mutex> lock(m_displayRefreshRetryMutex);
+		m_displayRefreshRetryArmed = false;
+		m_displayRefreshRetryRequestPending = false;
+		timer = m_displayRefreshRetryTimer;
+		m_displayRefreshRetryTimer = NULL;
+		removeHandler = m_displayRefreshRetryHandlerInstalled;
+		m_displayRefreshRetryHandlerInstalled = false;
+	}
+	if (timer != NULL) {
+		m_events->deleteTimer(timer);
+	}
+	if (removeHandler) {
+		m_events->removeHandler(
+			m_events->forOSXScreen().displayRefreshRetryRequested(),
+			&m_displayRefreshRetryEventTarget);
+		m_events->removeHandler(
+			Event::kTimer, &m_displayRefreshRetryEventTarget);
+	}
+}
+
+void
+OSXScreen::handleDisplayRefreshRetryRequest(const Event&, void*)
+{
+	// TimerQueue is only safe when its mutations and reads stay on the event
+	// loop. Cross-thread callers merely enqueue this request and update the
+	// armed bit protected by m_displayRefreshRetryMutex.
+	std::lock_guard<std::mutex> lock(m_displayRefreshRetryMutex);
+	m_displayRefreshRetryRequestPending = false;
+	if (!m_displayRefreshRetryArmed ||
+		!m_displayRefreshRetryHandlerInstalled ||
+		m_displayRefreshRetryTimer != NULL) {
+		return;
+	}
+	m_displayRefreshRetryTimer = m_events->newOneShotTimer(
+		kDisplayRefreshRetrySeconds,
+		&m_displayRefreshRetryEventTarget);
+}
+
+void
+OSXScreen::handleDisplayRefreshRetry(const Event& event, void*)
+{
+	const IEventQueue::TimerEvent* timerEvent =
+		static_cast<const IEventQueue::TimerEvent*>(event.getData());
+	EventQueueTimer* timer = timerEvent == NULL ? NULL : timerEvent->m_timer;
+	bool refresh = false;
+	{
+		std::lock_guard<std::mutex> lock(m_displayRefreshRetryMutex);
+		if (timer == NULL || timer != m_displayRefreshRetryTimer) {
+			return;
+		}
+		m_displayRefreshRetryTimer = NULL;
+		refresh = m_displayRefreshRetryArmed;
+		m_displayRefreshRetryArmed = false;
+	}
+
+	// Timer lifetime is owned by the event-loop handler. A callback can only
+	// change the armed bit, so it cannot invalidate this dispatch's job.
+	m_events->deleteTimer(timer);
+	if (refresh) {
+		updateScreenShape();
+	}
+}
+
+void
 OSXScreen::updateScreenShape()
 {
-	// get info for each display
-	CGDisplayCount displayCount = 0;
-
-	if (CGGetActiveDisplayList(0, NULL, &displayCount) != CGDisplayNoErr) {
-		return;
+	// CoreGraphics callbacks and event-loop retries can arrive on different
+	// threads. Only one capture may run at a time; a generation check below
+	// drops a retry whose geometry became stale while it was being queried.
+	std::lock_guard<std::mutex> captureLock(m_displayRefreshCaptureMutex);
+	std::uint64_t captureGeneration = 0;
+	{
+		std::lock_guard<std::mutex> lock(m_displayRefreshGenerationMutex);
+		if (m_displayConfigurationInProgress) {
+			LOG((CLOG_DEBUG1 "display refresh deferred until configuration completes"));
+			return;
+		}
+		captureGeneration = m_displayReconfigurationGeneration;
 	}
 
-	if (displayCount == 0) {
-		return;
+	const auto generationIsCurrent = [this, captureGeneration]() {
+		std::lock_guard<std::mutex> lock(m_displayRefreshGenerationMutex);
+		return !m_displayConfigurationInProgress &&
+			displayRefreshGenerationIsCurrent(
+				captureGeneration, m_displayReconfigurationGeneration);
+	};
+	const auto clearSnapshot = [this, captureGeneration]() {
+		{
+			std::lock_guard<std::mutex> generationLock(
+				m_displayRefreshGenerationMutex);
+			if (m_displayConfigurationInProgress ||
+				!displayRefreshGenerationIsCurrent(
+					captureGeneration, m_displayReconfigurationGeneration)) {
+				return false;
+			}
+			{
+				std::lock_guard<std::mutex> snapshotLock(m_displaySnapshotMutex);
+				m_displayID = kCGNullDirectDisplay;
+				m_displays.clear();
+				m_displayTopology.displays.clear();
+				m_x = m_y = m_w = m_h = 0;
+				m_xCenter = m_yCenter = 0;
+			}
+			// A repeated empty capture is still a fresh snapshot. Server needs
+			// this event to clear a pending Begin while preserving the original
+			// non-extending NoDisplayGrace deadline.
+			sendEvent(m_events->forIScreen().shapeChanged());
+		}
+		return true;
+	};
+
+	bool hasValidSnapshot = false;
+	{
+		std::lock_guard<std::mutex> lock(m_displaySnapshotMutex);
+		hasValidSnapshot = m_w > 0 && m_h > 0 && !m_displays.empty();
 	}
 
-	CGDirectDisplayID* displays = new CGDirectDisplayID[displayCount];
-	if (displays == NULL) {
-		return;
+	const DisplayQueryResult activeQuery =
+		queryDisplayList(CGGetActiveDisplayList);
+	const std::vector<CGDirectDisplayID> activeDisplays =
+		activeQuery.succeeded ? drawableDisplayList(activeQuery.displays, false) :
+		std::vector<CGDirectDisplayID>();
+	DisplayQueryResult onlineQuery = {false, {}};
+	std::vector<CGDirectDisplayID> onlineDisplays;
+	if (!m_isPrimary &&
+		(!activeQuery.succeeded || activeDisplays.empty()) &&
+		!hasValidSnapshot) {
+		onlineQuery = queryDisplayList(CGGetOnlineDisplayList);
+		if (onlineQuery.succeeded) {
+			onlineDisplays = drawableDisplayList(onlineQuery.displays, true);
+		}
 	}
 
-	if (CGGetActiveDisplayList(displayCount,
-							displays, &displayCount) != CGDisplayNoErr) {
-		delete[] displays;
+	const DisplayRefreshDecision decision = decideDisplayRefresh(
+		m_isPrimary ? DisplayRefreshRole::PrimaryServer :
+			DisplayRefreshRole::SecondaryClient,
+		hasValidSnapshot,
+		activeQuery.succeeded,
+		static_cast<CGDisplayCount>(activeDisplays.size()),
+		onlineQuery.succeeded,
+		static_cast<CGDisplayCount>(onlineDisplays.size()));
+	if (decision.source == DisplayRefreshSource::None) {
+		if (decision.retryRequired) {
+			if (generationIsCurrent()) {
+				LOG((CLOG_ERR "failed to query active displays; retrying geometry capture"));
+				scheduleDisplayRefreshRetry();
+			}
+			return;
+		}
+		if (decision.preserveCurrentSnapshot) {
+			LOG((CLOG_DEBUG "screen shape refresh unavailable; preserving last valid snapshot"));
+		}
+		else if (m_isPrimary) {
+			cancelDisplayRefreshRetry();
+			if (clearSnapshot()) {
+				LOG((CLOG_DEBUG "screen shape: no active displays"));
+			}
+			else {
+				LOG((CLOG_DEBUG1 "discarding stale empty display capture"));
+			}
+		}
+		else if (!activeQuery.succeeded || !onlineQuery.succeeded) {
+			LOG((CLOG_ERR "failed to query active and online displays"));
+		}
+		else {
+			LOG((CLOG_DEBUG "screen shape: no active or online displays"));
+		}
 		return;
 	}
+	cancelDisplayRefreshRetry();
 
-	// get smallest rect enclosing all display rects, and capture each
-	// display's id, rectangle, and name in one ordered snapshot so the
-	// server can reason about non-rectangular (e.g. L-shaped) multi-monitor
-	// layouts and getDisplays()/getDisplayNames() always agree.  a topology
-	// change rebuilds the whole snapshot below; the two accessors never
-	// re-query the display list independently.
+	const std::vector<CGDirectDisplayID>& displays =
+		decision.source == DisplayRefreshSource::Active ?
+		activeDisplays : onlineDisplays;
+
+	const CGDisplayCount displayCount =
+		static_cast<CGDisplayCount>(displays.size());
+	if (decision.source == DisplayRefreshSource::Online) {
+		LOG((CLOG_DEBUG "screen shape: active displays unavailable; using %u online display%s",
+			displayCount, displayCount == 1 ? "" : "s"));
+	}
+
 	CGRect totalBounds = CGRectZero;
-	m_displays.clear();
+	std::vector<DisplayEntry> nextDisplays;
+	nextDisplays.reserve(displayCount);
+	std::vector<TopologyDisplayRecord> topologyRecords;
+	topologyRecords.reserve(displayCount);
+	CGDirectDisplayID main = CGMainDisplayID();
+	bool selectedMain = false;
+	for (CGDirectDisplayID display : displays) {
+		if (display == main) {
+			selectedMain = true;
+			break;
+		}
+	}
+	if (!selectedMain) {
+		// CGGetOnlineDisplayList does not guarantee the main display is first
+		// (or even present), but every published topology needs one primary.
+		main = displays.front();
+	}
 	for (CGDisplayCount i = 0; i < displayCount; ++i) {
-		CGRect bounds = CGDisplayBounds(displays[i]);
-		totalBounds   = CGRectUnion(totalBounds, bounds);
+		const CGRect bounds = CGDisplayBounds(displays[i]);
+		totalBounds = (i == 0) ? bounds : CGRectUnion(totalBounds, bounds);
 
 		DisplayEntry entry;
-		entry.m_id   = displays[i];
+		entry.m_id = displays[i];
 		entry.m_rect.x = (SInt32)bounds.origin.x;
 		entry.m_rect.y = (SInt32)bounds.origin.y;
 		entry.m_rect.w = (SInt32)bounds.size.width;
 		entry.m_rect.h = (SInt32)bounds.size.height;
 		entry.m_name = displayNameForID(displays[i]);
-		m_displays.push_back(entry);
+		nextDisplays.push_back(entry);
+
+		topologyRecords.push_back({
+			stableDisplayIdForID(displays[i]),
+			entry.m_rect,
+			CGDisplayRotation(displays[i]),
+			displays[i] == main
+		});
 	}
 
-	// get shape of default screen
-	m_x = (SInt32)totalBounds.origin.x;
-	m_y = (SInt32)totalBounds.origin.y;
-	m_w = (SInt32)totalBounds.size.width;
-	m_h = (SInt32)totalBounds.size.height;
+	barrier::DisplayTopology nextTopology;
+	try {
+		nextTopology = topologyFromDisplayRecords(topologyRecords);
+	}
+	catch (const std::invalid_argument& error) {
+		LOG((CLOG_ERR "failed to identify display topology: %s", error.what()));
+		if (m_isPrimary && generationIsCurrent()) {
+			scheduleDisplayRefreshRetry();
+		}
+		return;
+	}
 
-	// get center of default screen
-  CGDirectDisplayID main = CGMainDisplayID();
-  const CGRect rect = CGDisplayBounds(main);
-  m_xCenter = (rect.origin.x + rect.size.width) / 2;
-  m_yCenter = (rect.origin.y + rect.size.height) / 2;
-
-	delete[] displays;
-	// We want to notify the peer screen whether we are primary screen or not
-	sendEvent(m_events->forIScreen().shapeChanged());
-
+	const CGRect mainBounds = CGDisplayBounds(main);
+	const SInt32 nextX = (SInt32)totalBounds.origin.x;
+	const SInt32 nextY = (SInt32)totalBounds.origin.y;
+	const SInt32 nextWidth = (SInt32)totalBounds.size.width;
+	const SInt32 nextHeight = (SInt32)totalBounds.size.height;
+	const SInt32 nextCenterX =
+		(mainBounds.origin.x + mainBounds.size.width) / 2;
+	const SInt32 nextCenterY =
+		(mainBounds.origin.y + mainBounds.size.height) / 2;
+	if (nextWidth <= 0 || nextHeight <= 0) {
+		LOG((CLOG_ERR "refusing invalid screen shape %dx%d",
+			nextWidth, nextHeight));
+		if (m_isPrimary && generationIsCurrent()) {
+			scheduleDisplayRefreshRetry();
+		}
+		return;
+	}
+	bool committed = false;
+	{
+		std::lock_guard<std::mutex> generationLock(
+			m_displayRefreshGenerationMutex);
+		if (!m_displayConfigurationInProgress &&
+			displayRefreshGenerationIsCurrent(
+				captureGeneration, m_displayReconfigurationGeneration)) {
+			std::lock_guard<std::mutex> snapshotLock(m_displaySnapshotMutex);
+			m_displayID = main;
+			m_displays = std::move(nextDisplays);
+			m_displayTopology = std::move(nextTopology);
+			m_x = nextX;
+			m_y = nextY;
+			m_w = nextWidth;
+			m_h = nextHeight;
+			m_xCenter = nextCenterX;
+			m_yCenter = nextCenterY;
+			committed = true;
+		}
+		if (committed) {
+			// Queue shapeChanged while the generation is pinned so a newer Begin
+			// event cannot be ordered before this completed snapshot.
+			sendEvent(m_events->forIScreen().shapeChanged());
+		}
+	}
+	if (!committed) {
+		LOG((CLOG_DEBUG1 "discarding stale display geometry capture"));
+		return;
+	}
 	LOG((CLOG_DEBUG "screen shape: center=%d,%d size=%dx%d on %u %s",
-         m_x, m_y, m_w, m_h, displayCount,
-         (displayCount == 1) ? "display" : "displays"));
+		 nextX, nextY, nextWidth, nextHeight, displayCount,
+		 (displayCount == 1) ? "display" : "displays"));
 }
 
 #pragma mark -
@@ -2867,19 +3413,6 @@ OSXScreen::handleCGInputEventSecondary(
 	// this fix is really screwing with the correct show/hide behavior. it
 	// should be tested better before reintroducing.
 	return event;
-
-	OSXScreen* screen = (OSXScreen*)refcon;
-	if (screen->m_cursorHidden && type == kCGEventMouseMoved) {
-
-		CGPoint pos = CGEventGetLocation(event);
-		if (pos.x != screen->m_xCenter || pos.y != screen->m_yCenter) {
-
-			LOG((CLOG_DEBUG "show cursor on secondary, type=%d pos=%d,%d",
-					type, pos.x, pos.y));
-			screen->showCursor();
-		}
-	}
-	return event;
 }
 
 // Quartz event tap support
@@ -2954,12 +3487,13 @@ OSXScreen::handleCGInputEvent(CGEventTapProxy proxy,
 			screen->onKey(event);
 			break;
 		case kCGEventTapDisabledByTimeout:
-			// Re-enable our event-tap
-			CGEventTapEnable(screen->m_eventTapPort, true);
-			LOG((CLOG_INFO "quartz event tap was disabled by timeout, re-enabling"));
-			break;
 		case kCGEventTapDisabledByUserInput:
-			LOG((CLOG_ERR "quartz event tap was disabled by user input"));
+			if (eventTapDisableRequiresReenable(type)) {
+				CGEventTapEnable(screen->m_eventTapPort, true);
+				LOG((CLOG_INFO "quartz event tap was disabled by %s, re-enabling",
+					type == kCGEventTapDisabledByTimeout ? "timeout" :
+					"user input"));
+			}
 			break;
 		case NX_NULLEVENT:
 			break;

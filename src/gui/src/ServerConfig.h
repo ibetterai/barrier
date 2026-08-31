@@ -26,13 +26,14 @@
 #include "Screen.h"
 #include "BaseConfig.h"
 #include "Hotkey.h"
+#include "TopologyProfileStore.h"
 
 class QTextStream;
 class QSettings;
 class QString;
 class QFile;
 class ServerConfigDialog;
-class MainWindow;
+class QWidget;
 
 class ServerConfig : public BaseConfig
 {
@@ -41,7 +42,7 @@ class ServerConfig : public BaseConfig
 
     public:
         ServerConfig(QSettings* settings, int numColumns, int numRows,
-            QString serverName, MainWindow* mainWindow);
+            QString serverName, QWidget* mainWindow);
         ~ServerConfig();
 
     public:
@@ -64,6 +65,26 @@ class ServerConfig : public BaseConfig
         bool getFreeformDisplayNames(const QString& name, QStringList& names) const;
         bool hasFreeformPositions() const;
         void clearFreeformPositions();
+        void setCurrentTopology(const barrier::DisplayTopology& topology);
+        void clearCurrentTopology();
+        bool hasCurrentTopology() const { return m_hasCurrentTopology; }
+        bool isCurrentTopologyKnown() const;
+        QList<QRect> currentServerDisplayRects() const;
+        bool saveCurrentTopologyProfile(QString* error = nullptr);
+        bool commitAcceptedConfiguration(
+            ServerConfig& edited, QString* error = nullptr);
+        const barrier::TopologyProfiles& topologyProfiles() const
+        {
+            return m_topologyProfiles;
+        }
+        barrier::TopologyProfileStoreResult topologyProfileLoadResult() const
+        {
+            return m_topologyProfileLoadResult;
+        }
+        const QString& topologyProfileError() const
+        {
+            return m_topologyProfileError;
+        }
         bool hasHeartbeat() const { return m_HasHeartbeat; }
         int heartbeat() const { return m_Heartbeat; }
         bool relativeMouseMoves() const { return m_RelativeMouseMoves; }
@@ -81,7 +102,7 @@ class ServerConfig : public BaseConfig
         bool enableDragAndDrop() const { return m_EnableDragAndDrop; }
         bool clipboardSharing() const { return m_ClipboardSharing; }
 
-        void saveSettings();
+        bool saveSettings(QString* error = nullptr);
         void loadSettings();
         bool save(const QString& fileName) const;
         void save(QFile& file) const;
@@ -134,6 +155,15 @@ class ServerConfig : public BaseConfig
         std::map<QString, std::pair<int,int>> m_freeformPositions;
         std::map<QString, QList<QRect>> m_freeformDisplayRects;
         std::map<QString, QStringList> m_freeformDisplayNames;
+        barrier::TopologyProfiles m_topologyProfiles;
+        barrier::DisplayTopology m_currentTopology;
+        bool m_hasCurrentTopology{false};
+        barrier::FreeformPositions m_legacyFreeformPositions;
+        barrier::FreeformDisplayRects m_legacyFreeformDisplayRects;
+        barrier::TopologyProfileStoreResult m_topologyProfileLoadResult{
+            barrier::TopologyProfileStoreResult::Ok};
+        QString m_topologyProfileError;
+        bool m_persistSettings{true};
         bool m_HasHeartbeat;
         int m_Heartbeat;
         bool m_RelativeMouseMoves;
@@ -150,7 +180,7 @@ class ServerConfig : public BaseConfig
         bool m_IgnoreAutoConfigClient;
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;
-        MainWindow* m_pMainWindow;
+        QWidget* m_pMainWindow;
 };
 
 QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config);

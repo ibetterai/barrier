@@ -26,6 +26,8 @@
 #include "common/stdvector.h"
 
 #include <bitset>
+#include <cstdint>
+#include <mutex>
 #include <sys/types.h>
 #include <Carbon/Carbon.h>
 #include <mach/mach_port.h>
@@ -65,6 +67,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual barrier::DisplayTopology getDisplayTopology() const;
     virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 
@@ -101,6 +104,67 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+
+    struct TopologyDisplayRecord {
+        std::string stableId;
+        ScreenRect logicalBounds;
+        double rotationDegrees;
+        bool primary;
+    };
+
+    enum class DisplayRefreshSource {
+        None,
+        Active,
+        Online
+    };
+
+    enum class DisplayRefreshRole {
+        PrimaryServer,
+        SecondaryClient
+    };
+
+    struct DisplayRefreshDecision {
+        DisplayRefreshSource source;
+        bool preserveCurrentSnapshot;
+        bool retryRequired;
+    };
+
+    //! Choose the CoreGraphics display set for a geometry refresh.
+    /*! Primary servers publish only active displays: a successful empty
+        result is a real zero-display snapshot and a query failure requires a
+        bounded retry. Secondary clients may preserve an existing snapshot or
+        bootstrap from online displays so a locked login session never sends
+        invalid 0x0 geometry. */
+    static DisplayRefreshDecision decideDisplayRefresh(
+                            DisplayRefreshRole role,
+                            bool hasValidSnapshot,
+                            bool activeQuerySucceeded,
+                            CGDisplayCount activeDisplayCount,
+                            bool onlineQuerySucceeded,
+                            CGDisplayCount onlineDisplayCount);
+
+    //! Whether a display callback is late enough to publish fresh geometry.
+    /*! CoreGraphics sends begin-configuration callbacks before it updates
+        display state.  Those callbacks suspend routing but must not capture
+        and publish the old geometry as a fresh snapshot. */
+    static bool         displayReconfigurationCaptureReady(
+                            CGDisplayChangeSummaryFlags flags);
+
+    //! Whether a completed capture still belongs to the latest callback.
+    static bool         displayRefreshGenerationIsCurrent(
+                            std::uint64_t capturedGeneration,
+                            std::uint64_t currentGeneration);
+
+    //! Whether a disabled Quartz event tap must be re-enabled immediately.
+    static bool         eventTapDisableRequiresReenable(CGEventType type);
+
+    //! Select the run loop that owns the Quartz event-tap source.
+    static CFRunLoopRef selectEventTapRunLoop(CFRunLoopRef currentRunLoop,
+                            CFRunLoopRef mainRunLoop);
+
+    static barrier::DisplayTopology topologyFromDisplayRecords(
+                            const std::vector<TopologyDisplayRecord>& displays);
+    static std::string normalizeDisplayIdentifier(const std::string& identifier);
 
     //! Index of the display containing (x, y) in an ordered display
     //! snapshot, or -1 when the coordinate is outside every display.
@@ -190,6 +254,11 @@ protected:
 private:
     void                updateScreenShape();
     void                updateScreenShape(const CGDirectDisplayID, const CGDisplayChangeSummaryFlags);
+    void                scheduleDisplayRefreshRetry();
+    void                cancelDisplayRefreshRetry();
+    void                destroyDisplayRefreshRetry();
+    void                handleDisplayRefreshRetryRequest(const Event&, void*);
+    void                handleDisplayRefreshRetry(const Event&, void*);
     void                postMouseEvent(CGPoint&) const;
 
     // convenience function to send events
@@ -335,6 +404,9 @@ private:
     // true if mouse has entered the screen
     bool                m_isOnScreen;
 
+    // Guards the published display generation across refresh callbacks and readers.
+    mutable std::mutex  m_displaySnapshotMutex;
+
     // the display
     CGDirectDisplayID    m_displayID;
 
@@ -342,6 +414,16 @@ private:
     SInt32                m_x, m_y;
     SInt32                m_w, m_h;
     SInt32                m_xCenter, m_yCenter;
+    std::mutex            m_displayRefreshCaptureMutex;
+    std::mutex            m_displayRefreshGenerationMutex;
+    std::uint64_t         m_displayReconfigurationGeneration;
+    bool                  m_displayConfigurationInProgress;
+    std::mutex            m_displayRefreshRetryMutex;
+    EventQueueTimer*      m_displayRefreshRetryTimer;
+    char                  m_displayRefreshRetryEventTarget;
+    bool                  m_displayRefreshRetryArmed;
+    bool                  m_displayRefreshRetryRequestPending;
+    bool                  m_displayRefreshRetryHandlerInstalled;
 
     //! One physical display captured during a geometry refresh.
     /*! id, rect, and name are resolved together so getDisplays() and
@@ -354,6 +436,7 @@ private:
     };
 
     std::vector<DisplayEntry>    m_displays;
+    barrier::DisplayTopology       m_displayTopology;
 
     // mouse state
     mutable SInt32        m_xCursor, m_yCursor;
@@ -428,6 +511,7 @@ private:
     // Quartz input event support
     CFMachPortRef            m_eventTapPort;
     CFRunLoopSourceRef        m_eventTapRLSR;
+    CFRunLoopRef            m_eventTapRunLoop;
 
     // for double click coalescing.
     double                    m_lastClickTime;

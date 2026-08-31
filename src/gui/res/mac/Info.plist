@@ -23,6 +23,10 @@
     <string>1.8.8</string>
     <key>CFBundleVersion</key>
     <string>1.8.8</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Barrier uses Bluetooth to detect paired servers, optionally advertise a client presence signal, and show nearby paired clients.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>Barrier uses Bluetooth to detect paired servers, optionally advertise a client presence signal, and show nearby paired clients.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2012-2016, Symless Ltd</string>
   </dict>

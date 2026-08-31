@@ -1,0 +1,38 @@
+# Barrier macOS arm64 release dependency lock.
+#
+# This file is sourced by scripts/build-macos-release-prefix.sh. Keep values
+# shell-safe (letters, numbers, punctuation; no command substitutions). Bump
+# BARRIER_RELEASE_PREFIX_SCHEMA whenever the installed prefix layout changes.
+
+BARRIER_RELEASE_LOCK_VERSION=1
+BARRIER_RELEASE_PREFIX_SCHEMA=1
+
+MACOS_RELEASE_ARCH=arm64
+MACOSX_DEPLOYMENT_TARGET=11.0
+
+QT_VERSION=5.15.19
+QTBASE_ARCHIVE=qtbase-everywhere-opensource-src-5.15.19.tar.xz
+QTBASE_URL=https://download.qt.io/archive/qt/5.15/5.15.19/submodules/qtbase-everywhere-opensource-src-5.15.19.tar.xz
+QTBASE_SHA256=51e91c73abacab81e64efd01bf95794e79c0e605ad80947a024769f0dd620a32
+
+QTSVG_ARCHIVE=qtsvg-everywhere-opensource-src-5.15.19.tar.xz
+QTSVG_URL=https://download.qt.io/archive/qt/5.15/5.15.19/submodules/qtsvg-everywhere-opensource-src-5.15.19.tar.xz
+QTSVG_SHA256=cabc95fc12fa84c92e95f08660742a0ce297e6db3deadbefbe7fbec4769b8c13
+
+QTTOOLS_ARCHIVE=qttools-everywhere-opensource-src-5.15.19.tar.xz
+QTTOOLS_URL=https://download.qt.io/archive/qt/5.15/5.15.19/submodules/qttools-everywhere-opensource-src-5.15.19.tar.xz
+QTTOOLS_SHA256=2694af886130d63b8a42bcd138f4035fd8108273ebd16781f87300da352f1aa6
+
+# Qt 5.15.19 still references the AGL framework removed by Xcode 26. This is
+# the qtbase-only form of Qt's cdb33c3d5621 Xcode 26 compatibility backport.
+QTBASE_PATCH=dist/macos/qtbase-5.15.19-xcode26.patch
+QTBASE_PATCH_SHA256=e5ec889a31d648be54700531a33df301ee571c5ca46003354a7c59114bc0f33e
+
+OPENSSL_VERSION=3.6.3
+OPENSSL_ARCHIVE=openssl-3.6.3.tar.gz
+OPENSSL_URL=https://www.openssl.org/source/openssl-3.6.3.tar.gz
+OPENSSL_SHA256=243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1
+OPENSSL_CONFIG_TARGET=darwin64-arm64-cc
+# OpenSSL compiles its engine and module lookup directories into libcrypto.
+# Configure against this stable public path, then stage into the cache prefix.
+OPENSSL_RUNTIME_PREFIX=/opt/barrier-release-prefix

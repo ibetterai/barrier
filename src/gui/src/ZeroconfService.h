@@ -17,10 +17,17 @@
 
 #pragma once
 
+#include "ClientPresenceAssociation.h"
+#include "ZeroconfEndpointLogPolicy.h"
 #include "ZeroconfServer.h"
 #include "ZeroconfRecord.h"
 
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QMap>
 #include <QtCore/QObject>
+#include <QtCore/QPointer>
+#include <QtCore/QSet>
+#include <QtCore/QTimer>
 
 typedef int32_t  DNSServiceErrorType;
 
@@ -33,24 +40,66 @@ class ZeroconfService : public QObject
     Q_OBJECT
 
 public:
-    ZeroconfService(MainWindow* mainWindow);
+    struct Requirements {
+        bool active;
+        bool publishClientService;
+    };
+
+    ZeroconfService(MainWindow* mainWindow, bool publishClientService);
     ~ZeroconfService();
+    void setServerDisplayReady(bool ready);
+    void wakeClient(const QString& screenName);
+    void clientConnected(const QString& screenName);
+    static Requirements requirements(bool autoConfigEnabled, bool serverMode,
+                                     bool proximityClientGatingEnabled,
+                                     bool clientSignalSharingEnabled = false)
+    {
+        return {
+            autoConfigEnabled || serverMode ||
+                proximityClientGatingEnabled ||
+                clientSignalSharingEnabled,
+            (autoConfigEnabled || proximityClientGatingEnabled ||
+             clientSignalSharingEnabled) &&
+                !serverMode
+        };
+    }
+
+signals:
+    void serversChanged(const QList<ZeroconfRecord>& records);
 
 private slots:
     void serverDetected(const QList<ZeroconfRecord>& list);
     void clientDetected(const QList<ZeroconfRecord>& list);
+    void registrationSucceeded(const ZeroconfRecord& record);
     void errorHandle(DNSServiceErrorType errorCode);
 
 private:
-    QString getLocalIPAddresses();
     bool registerService(bool server);
+    void scheduleClientRegistrationRetry();
+    void clearWakeState(const QString& screenName);
+    void tryAssociateClientPresence(const QString& screenName);
 
 private:
     MainWindow* m_pMainWindow;
+    bool m_PublishClientService;
     ZeroconfServer m_zeroconfServer;
     ZeroconfBrowser* m_pZeroconfBrowser;
     ZeroconfRegister* m_pZeroconfRegister;
     bool m_ServiceRegistered;
+    bool m_RegistrationPending;
+    int m_ClientRegistrationAttempts{0};
+    QTimer m_ClientRegistrationRetryTimer;
+    QMap<QString, QByteArray> m_ServerTxt;
+    barrier::ZeroconfEndpointLogPolicy m_ServerEndpointLogPolicy;
+    QMap<QString, ZeroconfRecord> m_PairedClientRecords;
+    QList<ZeroconfRecord> m_ClientRecords;
+    barrier::ClientPresenceConnectionEvidence
+        m_ClientPresenceConnectionEvidence;
+    QMap<QString, qint64> m_NextWakeAttemptMs;
+    QMap<QString, int> m_WakeAttemptCounts;
+    QSet<QString> m_WakeInFlight;
+    QMap<QString, QPointer<QObject>> m_WakeOperations;
+    QElapsedTimer m_WakeClock;
 
     static const char* m_ServerServiceName;
     static const char* m_ClientServiceName;

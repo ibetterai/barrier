@@ -32,8 +32,8 @@ public:
     // mocked so the real Screen::getDisplays (which dereferences the
     // platform screen, NULL in mock mode) is never reached: Client/Server
     // exercise the full geometry exchange during handshake.
-    MOCK_CONST_METHOD2(getDisplays, void(std::vector<ScreenRect>&));
-    MOCK_CONST_METHOD2(getDisplayNames, void(std::vector<std::string>&));
+    MOCK_CONST_METHOD1(getDisplays, void(std::vector<ScreenRect>&));
+    MOCK_CONST_METHOD1(getDisplayNames, void(std::vector<std::string>&));
     MOCK_CONST_METHOD2(getCursorPos, void(SInt32&, SInt32&));
     MOCK_METHOD0(resetOptions, void());
     MOCK_METHOD1(setOptions, void(const OptionsList&));

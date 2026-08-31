@@ -304,6 +304,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual barrier::DisplayTopology getDisplayTopology() const;
     virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 

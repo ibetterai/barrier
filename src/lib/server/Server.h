@@ -19,6 +19,8 @@
 #pragma once
 
 #include "server/Config.h"
+#include "server/ClientWakeRequest.h"
+#include "server/DisplayTopologyStateMachine.h"
 #include "barrier/clipboard_types.h"
 #include "barrier/Clipboard.h"
 #include "barrier/key_types.h"
@@ -233,9 +235,9 @@ private:
     // returns the jump zone of the client
     SInt32                getJumpZoneSize(BaseClientProxy*) const;
 
-    // change the active screen
     void                switchScreen(BaseClientProxy*,
-                            SInt32 x, SInt32 y, bool forScreenSaver);
+                            SInt32 x, SInt32 y, bool forScreenSaver,
+                            bool force = false);
 
     // jump to screen
     void                jumpToScreen(BaseClientProxy*);
@@ -257,7 +259,8 @@ private:
     // lookup neighboring screen, mapping the coordinate independent of
     // the direction to the neighbor's coordinate space.
     BaseClientProxy*    getNeighbor(BaseClientProxy*, EDirection,
-                            SInt32& x, SInt32& y) const;
+                            SInt32& x, SInt32& y,
+                            std::string* firstDisconnectedTarget = NULL) const;
 
     // lookup neighboring screen.  given a position relative to the
     // source screen, find the screen we should move onto and where.
@@ -265,7 +268,13 @@ private:
     // cross multiple screens.  if there is no suitable screen then
     // return NULL and x,y are not modified.
     BaseClientProxy*    mapToNeighbor(BaseClientProxy*, EDirection,
-                            SInt32& x, SInt32& y) const;
+                            SInt32& x, SInt32& y,
+                            std::string* firstDisconnectedTarget = NULL) const;
+
+    // Emit a bounded daemon-to-GUI request for a configured client that is
+    // currently unavailable. Requests are independently rate-limited per
+    // target; the GUI performs the platform-specific network wake.
+    void                requestClientWake(const std::string& target);
 
     // adjusts x and y or neither to avoid ending up in a jump zone
     // after entering the client in the given direction.
@@ -322,8 +331,37 @@ private:
 
     // process options from configuration
     void                processOptions();
+    enum class DisplayTopologyUpdateSource {
+        Configuration,
+        ReconfigurationSnapshot
+    };
+    DisplayTopologyDecision updateDisplayTopology(
+                            const barrier::DisplayTopology& topology,
+                            std::int64_t monotonicMs,
+                            DisplayTopologyUpdateSource source =
+                                DisplayTopologyUpdateSource::Configuration);
+    Config::DisplayRectMap currentLiveDisplayRects() const;
+    DisplayTopologyDecision beginDisplayTopologyReconfiguration(
+                            std::int64_t monotonicMs);
+    DisplayTopologyDecision updateDisplayTopologyDeadline(
+                            std::int64_t monotonicMs);
+    void                applyDisplayTopologyDecision(
+                            const DisplayTopologyDecision& decision);
+    void                armDisplayTopologyTimer(
+                            std::int64_t deadlineMs,
+                            std::int64_t monotonicMs);
+    void                stopDisplayTopologyTimer();
+    void                emitDisplayTopologyStatus(
+                            const DisplayTopologyDecision& decision);
+    bool                hasDisplayTopologyProfile(
+                            const barrier::DisplayTopology& topology) const;
+    static std::int64_t displayTopologyMonotonicMs();
+    void                handleDisplayTopologyTimer(const Event&, void*);
+
 
     // event handlers
+    void                handleDisplayReconfigurationStarted(
+                            const Event&, void*);
     void                handleShapeChanged(const Event&, void*);
     void                handleClipboardGrabbed(const Event&, void*);
     void                handleClipboardChanged(const Event&, void*);
@@ -406,6 +444,8 @@ public:
     bool                m_mock;
 
 private:
+    friend class ServerTopologyTestAccess;
+
     class ClipboardInfo {
     public:
         ClipboardInfo();
@@ -449,6 +489,11 @@ private:
 
     // current configuration
     Config*                m_config;
+    DisplayTopologyStateMachine m_displayTopologyStateMachine;
+    barrier::DisplayTopology m_currentDisplayTopology;
+    EventQueueTimer*       m_displayTopologyTimer;
+    bool                   m_switchingEnabled;
+    std::string            m_lastDisplayTopologyStatus;
 
     // input filter (from m_config);
     InputFilter*        m_inputFilter;
@@ -473,6 +518,8 @@ private:
     // state for double-tap screen switching
     double                m_switchTwoTapDelay;
     Stopwatch            m_switchTwoTapTimer;
+    Stopwatch            m_clientWakeClock;
+    barrier::ClientWakeRequestTracker m_clientWakeRequests;
     bool                m_switchTwoTapEngaged;
     bool                m_switchTwoTapArmed;
     SInt32                m_switchTwoTapZone;

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 430" role="img" aria-labelledby="title desc">
+  <title id="title">Two-machine L-shaped Barrier layout</title>
+  <desc id="desc">The client landscape display is a 1920 by 1080 rectangle above the server landscape display. The server portrait display is a 1080 by 1920 tall rectangle on the right, adjacent to both landscape displays on its left.</desc>
+  <defs>
+    <style>
+      .canvas { fill: #0f172a; }
+      .display { stroke: #082f49; stroke-width: 3; rx: 10; ry: 10; }
+      .client { fill: #f8fafc; }
+      .server { fill: #38bdf8; }
+      .text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; text-anchor: middle; }
+      .label { font-size: 18px; font-weight: 700; }
+      .detail { font-size: 14px; }
+      .edge { stroke: #f97316; stroke-width: 5; stroke-linecap: round; }
+      .note { fill: #e2e8f0; font-size: 13px; }
+    </style>
+  </defs>
+  <rect class="canvas" width="560" height="430"/>
+  <rect class="display client" x="40" y="40" width="307.2" height="172.8"/>
+  <rect class="display server" x="40" y="212.8" width="307.2" height="172.8"/>
+  <rect class="display server" x="347.2" y="40" width="172.8" height="307.2"/>
+  <line class="edge" x1="347.2" y1="40" x2="347.2" y2="347.2"/>
+  <text class="text label" x="193.6" y="108">Client</text>
+  <text class="text detail" x="193.6" y="132">1920×1080 landscape</text>
+  <text class="text detail" x="193.6" y="154">top, in notch</text>
+  <text class="text label" x="193.6" y="281">Server</text>
+  <text class="text detail" x="193.6" y="305">1920×1080 landscape</text>
+  <text class="text detail" x="193.6" y="327">bottom</text>
+  <text class="text label" x="433.6" y="164">Server</text>
+  <text class="text detail" x="433.6" y="188">1080×1920</text>
+  <text class="text detail" x="433.6" y="210">portrait</text>
+  <text class="text detail" x="433.6" y="232">right</text>
+  <text class="text note" x="280" y="410">Boxes are proportional: 1920×1080 landscape, 1080×1920 portrait.</text>
+</svg>

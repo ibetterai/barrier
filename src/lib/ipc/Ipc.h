@@ -25,6 +25,7 @@ enum EIpcMessage {
     kIpcHello,
     kIpcLogLine,
     kIpcCommand,
+    kIpcReload,
     kIpcShutdown,
 };
 
@@ -46,6 +47,10 @@ extern const char*        kIpcMsgLogLine;
 // $1 = command; the command for the daemon to launch, typically the full
 // path to barriers/c. $2 = true when process must be elevated on ms windows.
 extern const char*        kIpcMsgCommand;
+
+// reload: authenticated local GUI -> daemon -> node
+// requests the running server process to reload its configuration in place.
+extern const char*        kIpcMsgReload;
 
 // shutdown: daemon -> node
 // the daemon tells barriers/c to shut down gracefully.

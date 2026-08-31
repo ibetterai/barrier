@@ -51,6 +51,7 @@
 #include <ctime>
 #include <stdexcept>
 #include <algorithm>
+#include <limits>
 
 namespace barrier {
 
@@ -250,6 +251,8 @@ Server::Server(
 	m_xDelta2(0),
 	m_yDelta2(0),
 	m_config(&config),
+	m_displayTopologyTimer(NULL),
+	m_switchingEnabled(false),
 	m_inputFilter(config.getInputFilter()),
 	m_activeSaver(NULL),
 	m_switchDir(kNoDirection),
@@ -299,6 +302,9 @@ Server::Server(
 	m_events->adoptHandler(Event::kTimer, this,
 							new TMethodEventJob<Server>(this,
 								&Server::handleSwitchWaitTimeout));
+	m_events->adoptHandler(Event::kTimer, &m_displayTopologyStateMachine,
+							new TMethodEventJob<Server>(this,
+								&Server::handleDisplayTopologyTimer));
 	m_events->adoptHandler(m_events->forIKeyState().keyDown(),
 							m_inputFilter,
 							new TMethodEventJob<Server>(this,
@@ -429,6 +435,8 @@ Server::~Server()
 	m_events->removeHandler(m_events->forIPrimaryScreen().fakeInputEnd(),
 							m_inputFilter);
 	m_events->removeHandler(Event::kTimer, this);
+	stopDisplayTopologyTimer();
+	m_events->removeHandler(Event::kTimer, &m_displayTopologyStateMachine);
 	stopSwitch();
 
 	// force immediate disconnection of secondary clients
@@ -490,6 +498,9 @@ Server::setConfig(const Config& config)
 		sendOptions(client);
 	}
 
+	updateDisplayTopology(m_primaryClient->getDisplayTopology(),
+						 displayTopologyMonotonicMs());
+
 	return true;
 }
 
@@ -517,7 +528,11 @@ Server::adoptClient(BaseClientProxy* client)
 		closeClient(client, kMsgEBusy);
 		return;
 	}
-	LOG((CLOG_NOTE "client \"%s\" has connected", getName(client).c_str()));
+	const std::string clientName = getName(client);
+	m_clientWakeRequests.confirmConnected(clientName);
+	// The GUI uses this established connection event to cancel a pending
+	// wake and reset backoff, so it must survive restrictive log filters.
+	LOG((CLOG_PRINT "client \"%s\" has connected", clientName.c_str()));
 
 	// send configuration options to client
 	sendOptions(client);
@@ -630,8 +645,12 @@ Server::getJumpZoneSize(BaseClientProxy* client) const
 
 void
 Server::switchScreen(BaseClientProxy* dst,
-				SInt32 x, SInt32 y, bool forScreensaver)
+				SInt32 x, SInt32 y, bool forScreensaver, bool force)
 {
+	if (!force && !m_switchingEnabled && dst != m_active) {
+		return;
+	}
+
 	assert(dst != NULL);
 
 #ifndef NDEBUG
@@ -795,7 +814,8 @@ Server::hasAnyNeighbor(BaseClientProxy* client, EDirection dir) const
 
 BaseClientProxy*
 Server::getNeighbor(BaseClientProxy* src,
-				EDirection dir, SInt32& x, SInt32& y) const
+				EDirection dir, SInt32& x, SInt32& y,
+				std::string* firstDisconnectedTarget) const
 {
 	// note -- must be locked on entry
 
@@ -833,6 +853,10 @@ Server::getNeighbor(BaseClientProxy* src,
 		}
 
 		// skip over unconnected screen
+		if (firstDisconnectedTarget != NULL &&
+				firstDisconnectedTarget->empty()) {
+			*firstDisconnectedTarget = dstName;
+		}
 		LOG((CLOG_DEBUG2 "ignored \"%s\" on %s of \"%s\"", dstName.c_str(), Config::dirName(dir), srcName.c_str()));
 		srcName = dstName;
 
@@ -843,14 +867,16 @@ Server::getNeighbor(BaseClientProxy* src,
 
 BaseClientProxy*
 Server::mapToNeighbor(BaseClientProxy* src,
-				EDirection srcSide, SInt32& x, SInt32& y) const
+				EDirection srcSide, SInt32& x, SInt32& y,
+				std::string* firstDisconnectedTarget) const
 {
 	// note -- must be locked on entry
 
 	assert(src != NULL);
 
 	// get the first neighbor
-	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y);
+	BaseClientProxy* dst = getNeighbor(
+		src, srcSide, x, y, firstDisconnectedTarget);
 	if (dst == NULL) {
 		return NULL;
 	}
@@ -876,7 +902,8 @@ Server::mapToNeighbor(BaseClientProxy* src,
 				break;
 			}
 			LOG((CLOG_DEBUG2 "skipping over screen %s", getName(dst).c_str()));
-			dst = getNeighbor(lastGoodScreen, srcSide, x, y);
+			dst = getNeighbor(
+				lastGoodScreen, srcSide, x, y, firstDisconnectedTarget);
 		}
 		assert(lastGoodScreen != NULL);
 		x += dx;
@@ -910,7 +937,8 @@ Server::mapToNeighbor(BaseClientProxy* src,
 				break;
 			}
 			LOG((CLOG_DEBUG2 "skipping over screen %s", getName(dst).c_str()));
-			dst = getNeighbor(lastGoodScreen, srcSide, x, y);
+			dst = getNeighbor(
+				lastGoodScreen, srcSide, x, y, firstDisconnectedTarget);
 		}
 		assert(lastGoodScreen != NULL);
 		x += dx;
@@ -943,7 +971,8 @@ Server::mapToNeighbor(BaseClientProxy* src,
 				break;
 			}
 			LOG((CLOG_DEBUG2 "skipping over screen %s", getName(dst).c_str()));
-			dst = getNeighbor(lastGoodScreen, srcSide, x, y);
+			dst = getNeighbor(
+				lastGoodScreen, srcSide, x, y, firstDisconnectedTarget);
 		}
 		assert(lastGoodScreen != NULL);
 		y += dy;
@@ -975,7 +1004,8 @@ Server::mapToNeighbor(BaseClientProxy* src,
 				break;
 			}
 			LOG((CLOG_DEBUG2 "skipping over screen %s", getName(dst).c_str()));
-			dst = getNeighbor(lastGoodScreen, srcSide, x, y);
+			dst = getNeighbor(
+				lastGoodScreen, srcSide, x, y, firstDisconnectedTarget);
 		}
 		assert(lastGoodScreen != NULL);
 		y += dy;
@@ -1013,6 +1043,28 @@ Server::mapToNeighbor(BaseClientProxy* src,
 	avoidJumpZone(dst, srcSide, x, y);
 
 	return dst;
+}
+
+void
+Server::requestClientWake(const std::string& target)
+{
+	const std::string canonicalTarget =
+		m_config->getCanonicalName(target);
+	if (canonicalTarget.empty() ||
+			m_clients.find(canonicalTarget) != m_clients.end()) {
+		return;
+	}
+
+	std::string payload;
+	if (!barrier::formatClientWakeRequest(canonicalTarget, payload) ||
+			!m_clientWakeRequests.shouldEmit(
+				canonicalTarget, m_clientWakeClock.getTime())) {
+		return;
+	}
+
+	// This is a daemon-to-GUI control message, so it must survive even when
+	// the visible log level is stricter than NOTE.
+	LOG((CLOG_PRINT "%s", payload.c_str()));
 }
 
 void
@@ -1452,6 +1504,239 @@ Server::processOptions()
 	m_relativeMoves = newRelativeMoves;
 }
 
+std::int64_t
+Server::displayTopologyMonotonicMs()
+{
+	const double seconds = ARCH->time();
+	if (seconds <= 0.0) {
+		return 0;
+	}
+
+	const double maximumSeconds =
+		static_cast<double>(std::numeric_limits<std::int64_t>::max()) / 1000.0;
+	if (seconds >= maximumSeconds) {
+		return std::numeric_limits<std::int64_t>::max();
+	}
+	return static_cast<std::int64_t>(seconds * 1000.0);
+}
+
+bool
+Server::hasDisplayTopologyProfile(
+		const barrier::DisplayTopology& topology) const
+{
+	try {
+		const barrier::DisplayTopology normalized = topology.normalized();
+		const std::string key = normalized.profileKey();
+		Config::TopologyProfileMap::const_iterator profile =
+			m_config->topologyProfiles().find(key);
+		return profile != m_config->topologyProfiles().end() &&
+			profile->second.topology.normalized().canonicalIdentity() ==
+				normalized.canonicalIdentity();
+	}
+	catch (const std::invalid_argument&) {
+		return false;
+	}
+}
+
+DisplayTopologyDecision
+Server::updateDisplayTopology(
+		const barrier::DisplayTopology& topology,
+		std::int64_t monotonicMs,
+		DisplayTopologyUpdateSource source)
+{
+	try {
+		m_currentDisplayTopology = topology.normalized();
+	}
+	catch (const std::invalid_argument&) {
+		m_currentDisplayTopology = barrier::DisplayTopology();
+	}
+
+	const bool profileKnown =
+		hasDisplayTopologyProfile(m_currentDisplayTopology);
+	const DisplayTopologyDecision decision =
+		source == DisplayTopologyUpdateSource::ReconfigurationSnapshot
+			? m_displayTopologyStateMachine.observeReconfigurationSnapshot(
+				m_currentDisplayTopology, profileKnown, monotonicMs)
+			: m_displayTopologyStateMachine.observe(
+				m_currentDisplayTopology, profileKnown, monotonicMs);
+	applyDisplayTopologyDecision(decision);
+	armDisplayTopologyTimer(decision.nextDeadlineMs, monotonicMs);
+	return decision;
+}
+
+Config::DisplayRectMap
+Server::currentLiveDisplayRects() const
+{
+	Config::DisplayRectMap liveDisplayRects;
+	for (ClientList::const_iterator client = m_clients.begin();
+		 client != m_clients.end(); ++client) {
+		std::vector<ScreenRect> displays;
+		client->second->getDisplays(displays);
+		liveDisplayRects[client->first] = displays;
+	}
+	return liveDisplayRects;
+}
+
+DisplayTopologyDecision
+Server::beginDisplayTopologyReconfiguration(std::int64_t monotonicMs)
+{
+	const DisplayTopologyDecision decision =
+		m_displayTopologyStateMachine.beginReconfiguration(monotonicMs);
+	applyDisplayTopologyDecision(decision);
+	armDisplayTopologyTimer(decision.nextDeadlineMs, monotonicMs);
+	return decision;
+}
+
+DisplayTopologyDecision
+Server::updateDisplayTopologyDeadline(std::int64_t monotonicMs)
+{
+	const DisplayTopologyDecision decision =
+		m_displayTopologyStateMachine.onDeadline(monotonicMs);
+	applyDisplayTopologyDecision(decision);
+	armDisplayTopologyTimer(decision.nextDeadlineMs, monotonicMs);
+	return decision;
+}
+
+void
+Server::applyDisplayTopologyDecision(
+		const DisplayTopologyDecision& decision)
+{
+	DisplayTopologyDecision effectiveDecision = decision;
+	bool profileActivated = false;
+	if (decision.state == DisplayTopologyState::StableKnown) {
+		profileActivated =
+			m_config->selectTopology(
+				m_currentDisplayTopology, currentLiveDisplayRects()) ==
+				Config::TopologySelectionResult::Known;
+		if (!profileActivated) {
+			// A saved profile can still be unusable with a connected client's
+			// current DDIS. Keep the safe empty map and surface Layout required.
+			effectiveDecision.state = DisplayTopologyState::StableUnknown;
+			effectiveDecision.switchingEnabled = false;
+		}
+	}
+	else {
+		m_config->selectTopology(barrier::DisplayTopology());
+	}
+	m_switchingEnabled =
+		effectiveDecision.switchingEnabled && profileActivated;
+	m_primaryClient->reconfigure(getActivePrimarySides());
+
+	if (!m_switchingEnabled && m_active != m_primaryClient) {
+		SInt32 x, y, width, height;
+		m_primaryClient->getShape(x, y, width, height);
+		if (width > 0 && height > 0) {
+			switchScreen(m_primaryClient, x + width / 2, y + height / 2,
+						 false, true);
+		}
+		else {
+			stopSwitch();
+			m_active = m_primaryClient;
+			m_x = x;
+			m_y = y;
+		}
+	}
+
+	if (effectiveDecision.disconnectClients) {
+		disconnect();
+	}
+
+	emitDisplayTopologyStatus(effectiveDecision);
+}
+
+void
+Server::armDisplayTopologyTimer(
+		std::int64_t deadlineMs, std::int64_t monotonicMs)
+{
+	stopDisplayTopologyTimer();
+	if (deadlineMs < 0) {
+		return;
+	}
+
+	const std::int64_t remainingMs =
+		deadlineMs > monotonicMs ? deadlineMs - monotonicMs : 0;
+	m_displayTopologyTimer = m_events->newOneShotTimer(
+		static_cast<double>(remainingMs) / 1000.0,
+		&m_displayTopologyStateMachine);
+}
+
+void
+Server::stopDisplayTopologyTimer()
+{
+	if (m_displayTopologyTimer != NULL) {
+		m_events->deleteTimer(m_displayTopologyTimer);
+		m_displayTopologyTimer = NULL;
+	}
+}
+
+void
+Server::emitDisplayTopologyStatus(
+		const DisplayTopologyDecision& decision)
+{
+	const char* state = "Unavailable";
+	switch (decision.state) {
+	case DisplayTopologyState::Reconfiguring:
+		state = "Reconfiguring";
+		break;
+	case DisplayTopologyState::StableKnown:
+		state = "StableKnown";
+		break;
+	case DisplayTopologyState::StableUnknown:
+		state = "StableUnknown";
+		break;
+	case DisplayTopologyState::NoDisplayGrace:
+		state = "NoDisplayGrace";
+		break;
+	case DisplayTopologyState::Unavailable:
+		break;
+	}
+
+	std::string key("-");
+	std::string displays;
+	if (!m_currentDisplayTopology.empty()) {
+		try {
+			key = m_currentDisplayTopology.profileKey();
+			displays = m_currentDisplayTopology.canonicalIdentity();
+			static const size_t kMaximumDisplayStatusBytes = 8192;
+			if (displays.size() > kMaximumDisplayStatusBytes) {
+				displays = "oversize";
+			}
+		}
+		catch (const std::invalid_argument&) {
+			key = "-";
+			displays.clear();
+		}
+	}
+
+	std::ostringstream stream;
+	stream << "BARRIER_TOPOLOGY\tstate=" << state
+		   << "\tkey=" << key
+		   << "\tdisplays=" << displays;
+	const std::string status = stream.str();
+	if (status != m_lastDisplayTopologyStatus) {
+		m_lastDisplayTopologyStatus = status;
+		LOG((CLOG_NOTE "%s", status.c_str()));
+	}
+}
+
+void
+Server::handleDisplayTopologyTimer(const Event&, void*)
+{
+	updateDisplayTopologyDeadline(displayTopologyMonotonicMs());
+}
+
+void
+Server::handleDisplayReconfigurationStarted(const Event&, void* vclient)
+{
+	BaseClientProxy* client = static_cast<BaseClientProxy*>(vclient);
+	if (client != m_primaryClient || m_clientSet.count(client) == 0) {
+		return;
+	}
+
+	LOG((CLOG_DEBUG "primary display reconfiguration started"));
+	beginDisplayTopologyReconfiguration(displayTopologyMonotonicMs());
+}
+
 void
 Server::handleShapeChanged(const Event&, void* vclient)
 {
@@ -1462,6 +1747,17 @@ Server::handleShapeChanged(const Event&, void* vclient)
 	}
 
 	LOG((CLOG_DEBUG "screen \"%s\" shape changed", getName(client).c_str()));
+	if (client == m_primaryClient) {
+		updateDisplayTopology(m_primaryClient->getDisplayTopology(),
+							 displayTopologyMonotonicMs(),
+							 DisplayTopologyUpdateSource::ReconfigurationSnapshot);
+	}
+	else if (!m_currentDisplayTopology.empty()) {
+		// A connected client's DDIS is live geometry for the active profile.
+		// Re-select atomically so links use it without restarting either peer.
+		updateDisplayTopology(m_currentDisplayTopology,
+							 displayTopologyMonotonicMs());
+	}
 
 	// update jump coordinate
 	SInt32 x, y;
@@ -1667,9 +1963,11 @@ Server::handleSwitchToScreenEvent(const Event& event, void*)
 	SwitchToScreenInfo* info =
 		static_cast<SwitchToScreenInfo*>(event.getData());
 
-	ClientList::const_iterator index = m_clients.find(info->m_screen);
+	const std::string target = m_config->getCanonicalName(info->m_screen);
+	ClientList::const_iterator index = m_clients.find(target);
 	if (index == m_clients.end()) {
 		LOG((CLOG_DEBUG1 "screen \"%s\" not active", info->m_screen));
+		requestClientWake(target);
 	}
 	else {
 		jumpToScreen(index->second);
@@ -1702,8 +2000,11 @@ Server::handleSwitchInDirectionEvent(const Event& event, void*)
 
 	// jump to screen in chosen direction from center of this screen
 	SInt32 x = m_x, y = m_y;
+	std::string disconnectedTarget;
 	BaseClientProxy* newScreen =
-		getNeighbor(m_active, info->m_direction, x, y);
+		getNeighbor(m_active, info->m_direction, x, y,
+			&disconnectedTarget);
+	requestClientWake(disconnectedTarget);
 	if (newScreen == NULL) {
 		LOG((CLOG_DEBUG1 "no neighbor %s", Config::dirName(info->m_direction)));
 	}
@@ -2176,7 +2477,10 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 		}
 
 		// get jump destination
-		BaseClientProxy* newScreen = mapToNeighbor(m_active, dir, x, y);
+		std::string disconnectedTarget;
+		BaseClientProxy* newScreen = mapToNeighbor(
+			m_active, dir, x, y, &disconnectedTarget);
+		requestClientWake(disconnectedTarget);
 
 		// should we switch or not?
 		if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
@@ -2367,7 +2671,10 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		}
 
 		// try to switch screen.  get the neighbor.
-		newScreen = mapToNeighbor(m_active, dir, m_x, m_y);
+		std::string disconnectedTarget;
+		newScreen = mapToNeighbor(
+			m_active, dir, m_x, m_y, &disconnectedTarget);
+		requestClientWake(disconnectedTarget);
 
 		// see if we should switch
 		if (!isSwitchOkay(newScreen, dir, m_x, m_y, xc, yc)) {
@@ -2472,6 +2779,13 @@ Server::addClient(BaseClientProxy* client)
 							client->getEventTarget(),
 							new TMethodEventJob<Server>(this,
 								&Server::handleShapeChanged, client));
+	if (client == m_primaryClient) {
+		m_events->adoptHandler(
+			m_events->forIScreen().displayReconfigurationStarted(),
+			client->getEventTarget(),
+			new TMethodEventJob<Server>(
+				this, &Server::handleDisplayReconfigurationStarted, client));
+	}
 	m_events->adoptHandler(m_events->forClipboard().clipboardGrabbed(),
 							client->getEventTarget(),
 							new TMethodEventJob<Server>(this,
@@ -2493,6 +2807,13 @@ Server::addClient(BaseClientProxy* client)
 	// tell primary client about the active sides
 	m_primaryClient->reconfigure(getActivePrimarySides());
 
+	if (client != m_primaryClient && !m_currentDisplayTopology.empty()) {
+		// Apply DDIS already received during the handshake. If DDIS arrives
+		// after adoption, ClientProxy1_0 emits shapeChanged for the same path.
+		updateDisplayTopology(m_currentDisplayTopology,
+						  displayTopologyMonotonicMs());
+	}
+
 	return true;
 }
 
@@ -2508,6 +2829,11 @@ Server::removeClient(BaseClientProxy* client)
 	// remove event handlers
 	m_events->removeHandler(m_events->forIScreen().shapeChanged(),
 							client->getEventTarget());
+	if (client == m_primaryClient) {
+		m_events->removeHandler(
+			m_events->forIScreen().displayReconfigurationStarted(),
+			client->getEventTarget());
+	}
 	m_events->removeHandler(m_events->forClipboard().clipboardGrabbed(),
 							client->getEventTarget());
 	m_events->removeHandler(m_events->forClipboard().clipboardChanged(),
@@ -2586,6 +2912,13 @@ Server::removeActiveClient(BaseClientProxy* client)
 {
 	if (removeClient(client)) {
 		forceLeaveClient(client);
+		if (!m_currentDisplayTopology.empty()) {
+			// Drop the departed client's live DDIS override and atomically
+			// rebuild from the saved profile. Without this, a transient invalid
+			// DDIS could leave Layout required after that client was gone.
+			updateDisplayTopology(m_currentDisplayTopology,
+							 displayTopologyMonotonicMs());
+		}
 		m_events->removeHandler(m_events->forClientProxy().disconnected(), client);
 		if (m_clients.size() == 1 && m_oldClients.empty()) {
 			m_events->addEvent(Event(m_events->forServer().disconnected(), this));
