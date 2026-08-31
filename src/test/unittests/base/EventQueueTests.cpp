@@ -10,6 +10,7 @@
 #include "base/EventQueue.h"
 #include "base/SimpleEventQueueBuffer.h"
 #include "base/TMethodEventJob.h"
+#include "mt/Lock.h"
 #include "mt/Thread.h"
 
 #include <gtest/gtest.h>
@@ -17,8 +18,18 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 
-namespace {
+namespace barrier_test {
+
+class EventQueueTestAccess {
+public:
+    static UInt32 readyWaiterCount(const EventQueue& events)
+    {
+        Lock lock(events.m_readyMutex);
+        return events.m_readyWaiterCount;
+    }
+};
 
 bool waitForThreadOrCancel(Thread& thread, double timeout)
 {
@@ -29,6 +40,21 @@ bool waitForThreadOrCancel(Thread& thread, double timeout)
     thread.cancel();
     thread.wait();
     return false;
+}
+
+bool waitForReadyWaiters(const EventQueue& events, UInt32 expected,
+    std::chrono::seconds timeout)
+{
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + timeout;
+    do {
+        if (EventQueueTestAccess::readyWaiterCount(events) >= expected) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    return EventQueueTestAccess::readyWaiterCount(events) >= expected;
 }
 
 class BlockingFirstAddBuffer : public SimpleEventQueueBuffer {
@@ -153,4 +179,37 @@ TEST_F(EventQueueStartupTests, BecomesReadyOnlyAfterPendingEventsReachBuffer)
     EXPECT_TRUE(m_delivered);
 }
 
-} // namespace
+TEST_F(EventQueueStartupTests, WakesAllCallersAlreadyWaitingForReady)
+{
+    std::mutex returnedMutex;
+    std::condition_variable returnedCondition;
+    UInt32 returnedCount = 0;
+    const std::function<void()> waitForReady = [this, &returnedMutex,
+        &returnedCondition, &returnedCount] {
+        m_events.waitForReady();
+        std::lock_guard<std::mutex> lock(returnedMutex);
+        ++returnedCount;
+        returnedCondition.notify_all();
+    };
+
+    Thread firstWaiter(waitForReady);
+    Thread secondWaiter(waitForReady);
+    EXPECT_TRUE(waitForReadyWaiters(
+        m_events, 2, std::chrono::seconds(10)));
+
+    m_events.addEvent(Event(Event::kQuit));
+    Thread loopThread([this] { m_events.loop(); });
+
+    {
+        std::unique_lock<std::mutex> lock(returnedMutex);
+        EXPECT_TRUE(returnedCondition.wait_for(
+            lock, std::chrono::seconds(10),
+            [&returnedCount] { return returnedCount == 2; }));
+    }
+
+    EXPECT_TRUE(waitForThreadOrCancel(firstWaiter, 10.0));
+    EXPECT_TRUE(waitForThreadOrCancel(secondWaiter, 10.0));
+    EXPECT_TRUE(waitForThreadOrCancel(loopThread, 10.0));
+}
+
+} // namespace barrier_test

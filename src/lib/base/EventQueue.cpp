@@ -88,7 +88,8 @@ EventQueue::EventQueue() :
     m_typesForClipboard(NULL),
     m_typesForFile(NULL),
     m_readyMutex(new Mutex),
-    m_readyCondVar(new CondVar<bool>(m_readyMutex, false))
+    m_readyCondVar(new CondVar<bool>(m_readyMutex, false)),
+    m_readyWaiterCount(0)
 {
     ARCH->setSignalHandler(Arch::kINTERRUPT, &interrupt, this);
     ARCH->setSignalHandler(Arch::kTERMINATE, &interrupt, this);
@@ -588,9 +589,20 @@ EventQueue::waitForReady() const
     Lock lock(m_readyMutex);
 
     // Test the stored predicate before waiting so callers arriving after the
-    // one startup signal return immediately instead of blocking forever.
+    // startup transition return immediately instead of blocking forever.
     while (!(*m_readyCondVar)) {
-        if (!m_readyCondVar->wait(timer, 10.0)) {
+        ++m_readyWaiterCount;
+        bool signaled = false;
+        try {
+            signaled = m_readyCondVar->wait(timer, 10.0);
+        }
+        catch (...) {
+            --m_readyWaiterCount;
+            throw;
+        }
+        --m_readyWaiterCount;
+
+        if (!signaled) {
             throw std::runtime_error("event queue is not ready within 10 sec");
         }
     }
