@@ -276,6 +276,29 @@ std::vector<DisplayLink> deriveDisplayLinks(
     return links;
 }
 
+SInt32 canonicalEdgeCoordinate(EDirection direction,
+                               const ScreenRect& screenUnion,
+                               const ScreenRect& crossedDisplay,
+                               SInt32 x, SInt32 y, SInt32 zoneSize)
+{
+    switch (direction) {
+    case kLeft:
+        return screenUnion.x + (x - crossedDisplay.x) - zoneSize;
+    case kRight:
+        return screenUnion.x + screenUnion.w +
+               (x - (crossedDisplay.x + crossedDisplay.w)) + zoneSize;
+    case kTop:
+        return screenUnion.y + (y - crossedDisplay.y) - zoneSize;
+    case kBottom:
+        return screenUnion.y + screenUnion.h +
+               (y - (crossedDisplay.y + crossedDisplay.h)) + zoneSize;
+    case kNoDirection:
+        assert(0 && "bad direction");
+        break;
+    }
+    return 0;
+}
+
 std::string
 displayLabelAt(const std::vector<ScreenRect>& displays,
                const std::vector<std::string>& names,

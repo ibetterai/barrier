@@ -63,9 +63,8 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         QString m_Message;
         FreeformServerConfigWidget* m_pFreeformWidget;
         // This machine's own screen name (it's always the server side when
-        // this dialog is open) -- used to pick the CLIENT screen for the
-        // freeform canvas out of serverConfig().screens(), instead of the
-        // fragile "whatever grid slot 0 happens to hold" guess.
+        // this dialog is open). Used to exclude the server while seeding all
+        // connected client screens into the freeform canvas.
         QString m_LocalScreenName;
 };
 

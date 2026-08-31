@@ -14,10 +14,10 @@ B_BARRIERC="Barrier.app/Contents/MacOS/barrierc"
 B_BARRIERS="Barrier.app/Contents/MacOS/barriers"
 
 # Colorized output
-info() { tput bold; echo "$@"; tput sgr0 ; }
-error() { tput bold; tput setaf 1; echo "$@"; tput sgr0 ; }
-success() { tput bold; tput setaf 2; echo "$@"; tput sgr0 ; }
-warn() { tput bold; tput setaf 3; echo "$@"; tput sgr0 ; }
+info() { tput bold 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
+error() { tput bold 2>/dev/null || true; tput setaf 1 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
+success() { tput bold 2>/dev/null || true; tput setaf 2 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
+warn() { tput bold 2>/dev/null || true; tput setaf 3 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
 
 info "Checking for bundle contents"
 if [ ! -d "Barrier.app/Contents" ]; then

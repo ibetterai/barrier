@@ -59,3 +59,23 @@ TEST(FreeformServerConfigWidgetTests, clientDisplayNamesRoundTripAndClear)
     EXPECT_EQ(FreeformServerConfigWidget::canvasDisplayLabel("client-mac", 1, ""),
               QStringLiteral("client-mac #1"));
 }
+
+TEST(FreeformServerConfigWidgetTests, tracksMultipleConnectedClients)
+{
+    FreeformServerConfigWidget widget;
+    widget.setServerDisplays(QList<QRect>() << QRect(0, 0, 1920, 1080));
+
+    widget.setClientDisplays("landscape-client", QList<QRect>() << QRect(0, 0, 1920, 1080));
+    widget.setClientPosition("landscape-client", QPoint(0, -1080));
+
+    widget.setClientDisplays("portrait-client", QList<QRect>() << QRect(0, 0, 1080, 1920));
+    widget.setClientPosition("portrait-client", QPoint(1920, -1080));
+
+    const QStringList names = widget.clientNames();
+    EXPECT_TRUE(names.contains("landscape-client"));
+    EXPECT_TRUE(names.contains("portrait-client"));
+    EXPECT_EQ(widget.clientPosition("landscape-client"), QPoint(0, -1080));
+    EXPECT_EQ(widget.clientPosition("portrait-client"), QPoint(1920, -1080));
+    EXPECT_EQ(widget.clientDisplays("portrait-client"),
+              QList<QRect>() << QRect(0, 0, 1080, 1920));
+}

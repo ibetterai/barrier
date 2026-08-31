@@ -27,6 +27,7 @@
 #include "DataDownloader.h"
 #include "CommandProcess.h"
 #include "FingerprintAcceptDialog.h"
+#include "FreeformLayoutSettings.h"
 #include "QUtility.h"
 #include "ProcessorArch.h"
 #include "SslCertificate.h"
@@ -426,7 +427,22 @@ void MainWindow::updateFromLogLine(const QString &line)
     // TODO: this code makes Andrew cry
     checkConnected(line);
     checkFingerprint(line);
+    checkClientDisplayRects(line);
     checkClientDisplayNames(line);
+}
+
+void MainWindow::checkClientDisplayRects(const QString& line)
+{
+    // The daemon logs this when DDIS metadata arrives:
+    //   client "client-mac" display rects: [0,0 1080x1920]
+    // Store it before opening the freeform dialog so a portrait client
+    // renders from the reported geometry instead of the default landscape
+    // fallback.
+    QString clientName;
+    QList<QRect> rects;
+    if (barrier::parseClientDisplayRectsLogLine(line, clientName, rects)) {
+        serverConfig().setFreeformDisplayRects(clientName, rects);
+    }
 }
 
 void MainWindow::checkClientDisplayNames(const QString& line)

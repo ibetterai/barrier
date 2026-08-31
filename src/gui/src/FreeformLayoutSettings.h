@@ -26,4 +26,8 @@ void loadFreeformLayoutSettings(QSettings& settings,
                                 FreeformDisplayRects& displayRects,
                                 FreeformDisplayNames& displayNames);
 
+bool parseClientDisplayRectsLogLine(const QString& line,
+                                    QString& clientName,
+                                    QList<QRect>& rects);
+
 } // namespace barrier

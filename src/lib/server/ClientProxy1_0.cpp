@@ -26,6 +26,7 @@
 #include "base/IEventQueue.h"
 #include "base/TMethodEventJob.h"
 
+#include <cstdio>
 #include <cstring>
 
 //
@@ -526,6 +527,21 @@ ClientProxy1_0::recvDisplayInfo()
 
     LOG((CLOG_DEBUG "received client \"%s\" display info: %u display(s)",
          getName().c_str(), (unsigned)m_info.m_displays.size()));
+    // The GUI parses this line (MainWindow::checkClientDisplayRects) to
+    // learn client monitor orientation for the freeform layout. Keep the
+    // format stable: x,y widthxheight entries separated by semicolons.
+    std::string joined;
+    for (size_t i = 0; i < m_info.m_displays.size(); ++i) {
+        if (i > 0) {
+            joined += "; ";
+        }
+        char rect[96];
+        const ScreenRect& r = m_info.m_displays[i];
+        std::snprintf(rect, sizeof(rect), "%d,%d %dx%d", r.x, r.y, r.w, r.h);
+        joined += rect;
+    }
+    LOG((CLOG_INFO "client \"%s\" display rects: [%s]",
+         getName().c_str(), joined.c_str()));
     return true;
 }
 

@@ -2066,29 +2066,34 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 	// horizontally or vertically.  check both directions.
 	EDirection dirh = kNoDirection, dirv = kNoDirection;
 	SInt32 xh = x, yv = y;
-	// mapToNeighbor() canonicalizes by subtracting THIS screen's own
-	// reported origin (ax,ay -- the union bounding box's corner), so the
-	// offset we hand it must be expressed relative to ax,ay too. For a
-	// simple (non-L-shaped) screen sx==ax and sy==ay, so this reduces to
-	// the plain x/y +/- zoneSize as before. For an L-shaped screen, the
-	// display actually crossed (sx,sy,sw,sh) is often NOT at the union's
-	// own corner (e.g. a portrait display offset from the union's origin)
-	// -- using x/y directly there lands the cursor far outside the
-	// destination screen, which immediately triggers a bounce back.
+	// mapToNeighbor() performs its multi-screen traversal in the source
+	// screen union frame.  Use the crossed physical display to preserve
+	// overshoot, but anchor that overshoot at the union edge that traversal
+	// expects.  Without the union width/height on right/bottom crossings,
+	// a normal right-edge jump passes x=0 into mapToNeighbor(), which lands
+	// one source width left of the target and immediately bounces back.
 	if (x < sx + zoneSize) {
-		xh  = ax + (x - sx) - zoneSize;
+		xh  = barrier::canonicalEdgeCoordinate(
+			kLeft, ScreenRect{ax, ay, aw, ah}, ScreenRect{sx, sy, sw, sh},
+			x, y, zoneSize);
 		dirh = kLeft;
 	}
 	else if (x >= sx + sw - zoneSize) {
-		xh  = ax + (x - (sx + sw)) + zoneSize;
+		xh  = barrier::canonicalEdgeCoordinate(
+			kRight, ScreenRect{ax, ay, aw, ah}, ScreenRect{sx, sy, sw, sh},
+			x, y, zoneSize);
 		dirh = kRight;
 	}
 	if (y < sy + zoneSize) {
-		yv  = ay + (y - sy) - zoneSize;
+		yv  = barrier::canonicalEdgeCoordinate(
+			kTop, ScreenRect{ax, ay, aw, ah}, ScreenRect{sx, sy, sw, sh},
+			x, y, zoneSize);
 		dirv = kTop;
 	}
 	else if (y >= sy + sh - zoneSize) {
-		yv  = ay + (y - (sy + sh)) + zoneSize;
+		yv  = barrier::canonicalEdgeCoordinate(
+			kBottom, ScreenRect{ax, ay, aw, ah}, ScreenRect{sx, sy, sw, sh},
+			x, y, zoneSize);
 		dirv = kBottom;
 	}
 
