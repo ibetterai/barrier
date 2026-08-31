@@ -4,6 +4,7 @@ set -euo pipefail
 test_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH='' cd -- "$test_dir/../.." && pwd)
 sanitizer="$repo_root/scripts/sanitize-release-build-log.py"
+emitter="$repo_root/scripts/emit-sanitized-release-diagnostics.sh"
 metadata_scanner="$repo_root/scripts/scan-protected-metadata.pl"
 release_workflow="$repo_root/.github/workflows/release-macos-arm64.yml"
 test_root=$(/usr/bin/mktemp -d \
@@ -116,7 +117,47 @@ if [ "$(/usr/bin/wc -c < "$output_path")" -gt 49152 ]; then
     echo 'sanitized build diagnostic exceeded its total byte bound' >&2
     exit 1
 fi
-/usr/bin/perl "$metadata_scanner" --source-path "$output_path" >/dev/null
+/usr/bin/perl "$metadata_scanner" --source "$output_path" >/dev/null
+
+hosted_runner_temp="$test_root/""Users""/runner/work/_temp"
+/bin/mkdir -p "$hosted_runner_temp"
+emitted_output="$test_root/emitted.log"
+"$emitter" \
+    "$log_path" \
+    "$source_root" \
+    "$build_root" \
+    "$prefix_root" \
+    "$hosted_runner_temp" > "$emitted_output"
+/usr/bin/grep -F \
+    '| compiler error at barrier-source/src/example.cpp:42:7: expected expression' \
+    "$emitted_output" >/dev/null
+/usr/bin/perl "$metadata_scanner" --source "$emitted_output" >/dev/null
+
+emitter_sandbox="$test_root/emitter-sandbox"
+/bin/mkdir -p "$emitter_sandbox"
+/bin/cp "$emitter" "$emitter_sandbox/emit-sanitized-release-diagnostics.sh"
+/bin/cp "$metadata_scanner" "$emitter_sandbox/scan-protected-metadata.pl"
+printf '%s\n' \
+    '#!/usr/bin/env python3' \
+    'import os' \
+    'print(os.environ["SYNTHETIC_DIAGNOSTIC"])' \
+    > "$emitter_sandbox/sanitize-release-build-log.py"
+hostile_candidate="compiler error at barrier-source/src/example.cpp:1:1: $root_path"
+hostile_emission="$test_root/hostile-emission.log"
+if SYNTHETIC_DIAGNOSTIC="$hostile_candidate" \
+    "$emitter_sandbox/emit-sanitized-release-diagnostics.sh" \
+        "$log_path" \
+        "$source_root" \
+        "$build_root" \
+        "$prefix_root" \
+        "$hosted_runner_temp" > "$hostile_emission"; then
+    echo 'diagnostic emitter accepted hostile generated content' >&2
+    exit 1
+fi
+if [ -s "$hostile_emission" ]; then
+    echo 'diagnostic emitter exposed hostile generated content' >&2
+    exit 1
+fi
 
 unstructured_log="$test_root/unstructured.log"
 unstructured_output="$test_root/unstructured.stdout"
@@ -149,24 +190,10 @@ if [ -s "$test_root/missing.stdout" ] \
 fi
 /usr/bin/grep -F 'log unavailable' "$test_root/missing.stderr" >/dev/null
 
-# These are intentionally literal workflow source fragments.
+/usr/bin/grep -F 'scripts/emit-sanitized-release-diagnostics.sh' \
+    "$release_workflow" >/dev/null
+# This is intentionally a literal helper source fragment.
 # shellcheck disable=SC2016
-capture_line=$(/usr/bin/grep -nF '>"$diagnostic_output" 2>/dev/null' \
-    "$release_workflow" | /usr/bin/cut -d: -f1)
-scan_line=$(/usr/bin/grep -nF '&& /usr/bin/perl scripts/scan-protected-metadata.pl' \
-    "$release_workflow" | /usr/bin/cut -d: -f1)
-# shellcheck disable=SC2016
-emit_line=$(/usr/bin/grep -nF '/bin/cat "$diagnostic_output"' \
-    "$release_workflow" | /usr/bin/cut -d: -f1)
-case "$capture_line:$scan_line:$emit_line" in
-    *[!0-9:]*|:*|*::*|*:) workflow_order_is_valid=0 ;;
-    *) workflow_order_is_valid=1 ;;
-esac
-if [ "$workflow_order_is_valid" -ne 1 ] \
-    || [ "$capture_line" -ge "$scan_line" ] \
-    || [ "$scan_line" -ge "$emit_line" ]; then
-    echo 'release workflow does not validate captured diagnostics before emission' >&2
-    exit 1
-fi
+/usr/bin/grep -F -- '--source "$diagnostic_output"' "$emitter" >/dev/null
 
 printf 'release build log sanitizer tests passed\n'

@@ -131,18 +131,12 @@ jobs:
           if ! "$cmake_bin" --build "$RELEASE_BUILD_DIR" --parallel 3 \
               >"$build_log" 2>&1; then
             echo 'locked release build failed' >&2
-            diagnostic_output="$RUNNER_TEMP/release-product-build.sanitized"
-            if /usr/bin/python3 scripts/sanitize-release-build-log.py \
+            if ! scripts/emit-sanitized-release-diagnostics.sh \
                 "$build_log" \
-                --source-root "$GITHUB_WORKSPACE" \
-                --build-root "$RELEASE_BUILD_DIR" \
-                --prefix-root "$RELEASE_PREFIX" \
-                --temp-root "$RUNNER_TEMP" \
-                >"$diagnostic_output" 2>/dev/null \
-                && /usr/bin/perl scripts/scan-protected-metadata.pl \
-                  --source-path "$diagnostic_output" >/dev/null 2>&1; then
-              /bin/cat "$diagnostic_output"
-            else
+                "$GITHUB_WORKSPACE" \
+                "$RELEASE_BUILD_DIR" \
+                "$RELEASE_PREFIX" \
+                "$RUNNER_TEMP"; then
               echo 'privacy-safe build diagnostics unavailable' >&2
             fi
             exit 1
