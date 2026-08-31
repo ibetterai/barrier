@@ -27,6 +27,10 @@ if (NOT "DisplayNames.cpp" IN_LIST sources AND
     NOT "${CMAKE_CURRENT_SOURCE_DIR}/DisplayNames.cpp" IN_LIST sources)
     list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/DisplayNames.cpp")
 endif()
+if (NOT "DisplayTopology.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/DisplayTopology.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/DisplayTopology.cpp")
+endif()
 
 # arch
 if (WIN32)

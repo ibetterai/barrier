@@ -21,6 +21,7 @@
 #include "server/InputFilter.h"
 #include "barrier/option_types.h"
 #include "barrier/protocol_types.h"
+#include "barrier/DisplayTopology.h"
 #include "barrier/IPlatformScreen.h"
 #include "net/NetworkAddress.h"
 #include "base/XBase.h"
@@ -58,6 +59,34 @@ class Config {
 public:
     typedef std::map<OptionID, OptionValue> ScreenOptions;
     typedef std::pair<float, float> Interval;
+
+    struct ScreenPosition {
+        SInt32 x;
+        SInt32 y;
+
+        bool operator==(const ScreenPosition& other) const
+        {
+            return x == other.x && y == other.y;
+        }
+    };
+    typedef std::map<std::string, ScreenPosition, barrier::string::CaselessCmp>
+        ScreenPositionMap;
+    typedef std::map<std::string, std::vector<ScreenRect>,
+                     barrier::string::CaselessCmp> DisplayRectMap;
+
+    struct TopologyProfile {
+        std::string key;
+        barrier::DisplayTopology topology;
+        ScreenPositionMap screenPositions;
+        DisplayRectMap displayRects;
+    };
+    typedef std::map<std::string, TopologyProfile> TopologyProfileMap;
+
+    enum class TopologySelectionResult {
+        Known,
+        Unknown,
+        Unavailable
+    };
 
     class CellEdge {
     public:
@@ -175,7 +204,11 @@ public:
     virtual ~Config();
 
 #ifdef BARRIER_TEST_ENV
-    Config() : m_inputFilter(NULL) { }
+    Config() :
+        m_inputFilter(NULL),
+        m_hasLockToScreenAction(false),
+        m_events(NULL)
+    { }
 #endif
 
     //! @name manipulators
@@ -202,11 +235,27 @@ public:
     //! Generate links from freeform geometry
     /*!
     Clears existing links and regenerates them from the current
-    per-screen display rectangles and freeform positions.  Screens
-    without an explicit position keep their grid placement; screens
-    without display rects fall back to their bounding box.
+    per-screen display rectangles and freeform positions. Returns false
+    when geometry is incomplete or would create overlapping links.
     */
-    void generateFreeformLinks();
+    bool generateFreeformLinks();
+
+    //! Store an exact display-topology profile after validating its geometry.
+    bool addTopologyProfile(const TopologyProfile& profile);
+
+    //! Remove all stored display-topology profiles and active profile links.
+    void clearTopologyProfiles();
+
+    //! Select and atomically activate the profile matching \p topology.
+    TopologySelectionResult selectTopology(
+        const barrier::DisplayTopology& topology,
+        const DisplayRectMap& liveDisplayRects = DisplayRectMap());
+
+    //! Get all stored profiles.
+    const TopologyProfileMap& topologyProfiles() const;
+
+    //! Get the key of the currently active profile, or empty when none.
+    const std::string& activeTopologyProfileKey() const;
 
     //! Rename screen
     /*!
@@ -464,6 +513,10 @@ private:
     void                readSectionScreens(ConfigReadContext&);
     void                readSectionLinks(ConfigReadContext&);
     void                readSectionAliases(ConfigReadContext&);
+    void                readSectionTopologyProfiles(ConfigReadContext&);
+    bool                validateTopologyProfile(
+                            const TopologyProfile& profile) const;
+    void                clearRuntimeLinks();
 
     InputFilter::Condition* parseCondition(ConfigReadContext&, const std::string& condition,
                                            const std::vector<std::string>& args);
@@ -486,13 +539,13 @@ private:
     IEventQueue*        m_events;
     // Per-screen display rectangles, in screen-local coordinates (main display
     // at 0,0).  Empty means single bounding-box display.
-    std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>
-                            m_displayRects;
-    // Freeform screen positions in the global Barrier layout.  Empty means
-    // grid layout (numColumns/numRows).  When present, the display rects
+    DisplayRectMap        m_displayRects;
+    // Freeform screen positions in the global Barrier layout. Empty means
+    // grid layout (numColumns/numRows). When present, the display rects
     // above are offset by this position for adjacency testing.
-    std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>
-                            m_screenPositions;
+    ScreenPositionMap     m_screenPositions;
+    TopologyProfileMap    m_topologyProfiles;
+    std::string           m_activeTopologyProfileKey;
 };
 
 //! Configuration read context

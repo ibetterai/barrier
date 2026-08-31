@@ -340,6 +340,12 @@ DaemonApp::handleIpcMessage(const Event& e, void*)
             break;
         }
 
+        case kIpcReload: {
+            IpcReloadMessage reload;
+            m_ipcServer->send(reload, kIpcClientNode);
+            break;
+        }
+
         case kIpcHello:
             IpcHelloMessage* hm = static_cast<IpcHelloMessage*>(m);
             String type;

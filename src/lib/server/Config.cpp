@@ -19,6 +19,7 @@
 #include "server/Config.h"
 
 #include "server/Server.h"
+#include "barrier/DisplayGeometry.h"
 #include "barrier/KeyMap.h"
 #include "barrier/key_types.h"
 #include "net/XSocket.h"
@@ -27,6 +28,125 @@
 #include "common/stdostream.h"
 
 #include <cstdlib>
+#include <cstdint>
+#include <limits>
+#include <sstream>
+
+namespace {
+
+std::string hexEncode(const std::string& value)
+{
+	static const char digits[] = "0123456789abcdef";
+	std::string encoded;
+	encoded.reserve(value.size() * 2);
+	for (unsigned char byte : value) {
+		encoded.push_back(digits[byte >> 4]);
+		encoded.push_back(digits[byte & 0x0f]);
+	}
+	return encoded;
+}
+
+bool hexDecode(const std::string& value, std::string& decoded)
+{
+	if (value.size() % 2 != 0) {
+		return false;
+	}
+	decoded.clear();
+	decoded.reserve(value.size() / 2);
+	for (std::string::size_type i = 0; i < value.size(); i += 2) {
+		unsigned char byte = 0;
+		for (int half = 0; half < 2; ++half) {
+			const char digit = value[i + half];
+			unsigned char nibble;
+			if (digit >= '0' && digit <= '9') {
+				nibble = static_cast<unsigned char>(digit - '0');
+			}
+			else if (digit >= 'a' && digit <= 'f') {
+				nibble = static_cast<unsigned char>(digit - 'a' + 10);
+			}
+			else if (digit >= 'A' && digit <= 'F') {
+				nibble = static_cast<unsigned char>(digit - 'A' + 10);
+			}
+			else {
+				return false;
+			}
+			byte = static_cast<unsigned char>((byte << 4) | nibble);
+		}
+		decoded.push_back(static_cast<char>(byte));
+	}
+	return true;
+}
+
+bool screenPositionsEqual(const Config::ScreenPositionMap& left,
+						  const Config::ScreenPositionMap& right)
+{
+	if (left.size() != right.size()) {
+		return false;
+	}
+	Config::ScreenPositionMap::const_iterator lit = left.begin();
+	Config::ScreenPositionMap::const_iterator rit = right.begin();
+	for (; lit != left.end(); ++lit, ++rit) {
+		if (!barrier::string::CaselessCmp::equal(lit->first, rit->first) ||
+			!(lit->second == rit->second)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool displayRectsEqual(const Config::DisplayRectMap& left,
+					   const Config::DisplayRectMap& right)
+{
+	if (left.size() != right.size()) {
+		return false;
+	}
+	Config::DisplayRectMap::const_iterator lit = left.begin();
+	Config::DisplayRectMap::const_iterator rit = right.begin();
+	for (; lit != left.end(); ++lit, ++rit) {
+		if (!barrier::string::CaselessCmp::equal(lit->first, rit->first) ||
+			lit->second.size() != rit->second.size()) {
+			return false;
+		}
+		for (std::size_t i = 0; i < lit->second.size(); ++i) {
+			const ScreenRect& a = lit->second[i];
+			const ScreenRect& b = rit->second[i];
+			if (a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool topologyProfilesEqual(const Config::TopologyProfileMap& left,
+						   const Config::TopologyProfileMap& right)
+{
+	if (left.size() != right.size()) {
+		return false;
+	}
+	Config::TopologyProfileMap::const_iterator lit = left.begin();
+	Config::TopologyProfileMap::const_iterator rit = right.begin();
+	for (; lit != left.end(); ++lit, ++rit) {
+		const Config::TopologyProfile& a = lit->second;
+		const Config::TopologyProfile& b = rit->second;
+		if (lit->first != rit->first ||
+			a.key != b.key ||
+			a.topology.canonicalIdentity() != b.topology.canonicalIdentity() ||
+			!screenPositionsEqual(a.screenPositions, b.screenPositions) ||
+			!displayRectsEqual(a.displayRects, b.displayRects)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool fitsSInt32(long long value)
+{
+	return value >= std::numeric_limits<SInt32>::min() &&
+		value <= std::numeric_limits<SInt32>::max();
+}
+
+} // namespace
 
 using namespace barrier::string;
 
@@ -60,6 +180,15 @@ Config::addScreen(const std::string& name)
 
 	// add name
 	m_nameToCanonicalName.insert(std::make_pair(name, name));
+	if (!m_topologyProfiles.empty()) {
+		m_topologyProfiles.clear();
+	}
+	if (!m_activeTopologyProfileKey.empty()) {
+		clearRuntimeLinks();
+		m_screenPositions.clear();
+		m_displayRects.clear();
+		m_activeTopologyProfileKey.clear();
+	}
 
 	return true;
 }
@@ -71,15 +200,19 @@ void Config::setDisplayRects(const std::string& name,
     if (cname.empty()) {
         return;
     }
+    const bool invalidatesActive = !m_activeTopologyProfileKey.empty();
     m_displayRects[cname] = rects;
+    if (invalidatesActive) {
+        clearRuntimeLinks();
+        m_activeTopologyProfileKey.clear();
+    }
 }
 
 bool Config::getDisplayRects(const std::string& name,
                              std::vector<ScreenRect>& rects) const
 {
     std::string cname = getCanonicalName(name);
-    std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::const_iterator i =
-        m_displayRects.find(cname);
+    DisplayRectMap::const_iterator i = m_displayRects.find(cname);
     if (i == m_displayRects.end()) {
         return false;
     }
@@ -93,25 +226,32 @@ void Config::setScreenPosition(const std::string& name, SInt32 x, SInt32 y)
     if (cname.empty()) {
         return;
     }
-    m_screenPositions[cname] = std::make_pair(x, y);
+    const bool invalidatesActive = !m_activeTopologyProfileKey.empty();
+    m_screenPositions[cname] = {x, y};
+    if (invalidatesActive) {
+        clearRuntimeLinks();
+        m_activeTopologyProfileKey.clear();
+    }
 }
 
 bool Config::getScreenPosition(const std::string& name, SInt32& x, SInt32& y) const
 {
     std::string cname = getCanonicalName(name);
-    std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::const_iterator i =
-        m_screenPositions.find(cname);
+    ScreenPositionMap::const_iterator i = m_screenPositions.find(cname);
     if (i == m_screenPositions.end()) {
         return false;
     }
-    x = i->second.first;
-    y = i->second.second;
+    x = i->second.x;
+    y = i->second.y;
     return true;
 }
 bool Config::renameScreen(const std::string& oldName, const std::string& newName)
 {
 	// get canonical name and find cell
     std::string oldCanonical = getCanonicalName(oldName);
+	if (!CaselessCmp::equal(oldName, oldCanonical)) {
+		return false;
+	}
 	CellMap::iterator index = m_map.find(oldCanonical);
 	if (index == m_map.end()) {
 		return false;
@@ -150,22 +290,27 @@ bool Config::renameScreen(const std::string& oldName, const std::string& newName
 		}
 	}
 
-	// update display rects and positions
-	{
-		std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::iterator iter =
-			m_displayRects.find(oldCanonical);
-		if (iter != m_displayRects.end()) {
-			std::vector<ScreenRect> rects = iter->second;
-			m_displayRects.erase(iter);
-			m_displayRects[newName] = rects;
+	// Update freeform geometry in the active seed and every stored profile.
+	const auto renameGeometry = [&oldCanonical, &newName](
+		DisplayRectMap& rects, ScreenPositionMap& positions) {
+		DisplayRectMap::iterator rect = rects.find(oldCanonical);
+		if (rect != rects.end()) {
+			const std::vector<ScreenRect> value = rect->second;
+			rects.erase(rect);
+			rects[newName] = value;
 		}
-		std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::iterator posIter =
-			m_screenPositions.find(oldCanonical);
-		if (posIter != m_screenPositions.end()) {
-			std::pair<SInt32, SInt32> pos = posIter->second;
-			m_screenPositions.erase(posIter);
-			m_screenPositions[newName] = pos;
+		ScreenPositionMap::iterator position = positions.find(oldCanonical);
+		if (position != positions.end()) {
+			const ScreenPosition value = position->second;
+			positions.erase(position);
+			positions[newName] = value;
 		}
+	};
+	renameGeometry(m_displayRects, m_screenPositions);
+	for (TopologyProfileMap::iterator profile = m_topologyProfiles.begin();
+		 profile != m_topologyProfiles.end(); ++profile) {
+		renameGeometry(profile->second.displayRects,
+					   profile->second.screenPositions);
 	}
 
 	return true;
@@ -203,116 +348,301 @@ void Config::removeScreen(const std::string& name)
 
 	m_displayRects.erase(canonical);
 	m_screenPositions.erase(canonical);
+	for (TopologyProfileMap::iterator profile = m_topologyProfiles.begin();
+		 profile != m_topologyProfiles.end(); ++profile) {
+		profile->second.displayRects.erase(canonical);
+		profile->second.screenPositions.erase(canonical);
+	}
+	if (!m_activeTopologyProfileKey.empty()) {
+		clearRuntimeLinks();
+		m_displayRects.clear();
+		m_screenPositions.clear();
+		m_activeTopologyProfileKey.clear();
+	}
+	if (m_map.empty()) {
+		m_topologyProfiles.clear();
+		m_activeTopologyProfileKey.clear();
+	}
 }
 
-void Config::generateFreeformLinks()
+bool Config::generateFreeformLinks()
 {
-	// Clear existing links; they will be regenerated from geometry.
-	for (CellMap::iterator i = m_map.begin(); i != m_map.end(); ++i) {
-		i->second = Cell();
+	CellMap candidate = m_map;
+	for (CellMap::iterator cell = candidate.begin();
+		 cell != candidate.end(); ++cell) {
+		for (EDirection direction = kFirstDirection;
+			 direction <= kLastDirection;
+			 direction = static_cast<EDirection>(direction + 1)) {
+			cell->second.remove(direction);
+		}
+	}
+	if (m_screenPositions.size() != m_map.size() ||
+		m_displayRects.size() != m_map.size()) {
+		return false;
 	}
 
-	// Build a map from screen name to its global display rects.
-	// Global rect = screen position + display rect (screen-local, main at 0,0).
-	// Screens without an explicit freeform position keep their grid placement
-	// and are skipped here (caller should have called the grid generator first).
-	if (m_screenPositions.empty() || m_displayRects.empty()) {
-		return;
-	}
-
-	struct GlobalRect { SInt32 x, y, w, h; std::string screen; };
-	std::vector<GlobalRect> allRects;
-	for (CellMap::const_iterator s = m_map.begin(); s != m_map.end(); ++s) {
-		std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::const_iterator p =
-			m_screenPositions.find(s->first);
-		if (p == m_screenPositions.end()) {
-			continue;
+	for (CellMap::const_iterator screen = m_map.begin();
+		 screen != m_map.end(); ++screen) {
+		ScreenPositionMap::const_iterator position =
+			m_screenPositions.find(screen->first);
+		DisplayRectMap::const_iterator rects =
+			m_displayRects.find(screen->first);
+		if (position == m_screenPositions.end() ||
+			rects == m_displayRects.end() || rects->second.empty()) {
+			return false;
 		}
-		SInt32 sx = p->second.first;
-		SInt32 sy = p->second.second;
-		std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::const_iterator r =
-			m_displayRects.find(s->first);
-		if (r == m_displayRects.end() || r->second.empty()) {
-			// Fall back to bounding box display rects are not yet known.
-			continue;
-		}
-		for (std::vector<ScreenRect>::const_iterator d = r->second.begin();
-				d != r->second.end(); ++d) {
-			GlobalRect g;
-			g.x = sx + d->x;
-			g.y = sy + d->y;
-			g.w = d->w;
-			g.h = d->h;
-			g.screen = s->first;
-			allRects.push_back(g);
+		for (const ScreenRect& rect : rects->second) {
+			if (rect.w <= 0 || rect.h <= 0) {
+				return false;
+			}
 		}
 	}
 
-	// A drag that is visually snapped on the scaled freeform canvas can still
-	// round to a few dozen layout pixels. Treat that as touching so visually
-	// adjacent displays still produce links.
-	static const SInt32 kFreeformAdjacencyTolerancePx = 32;
-	// For each ordered pair of displays on different screens, check
-	// adjacency on each side and create a partial edge link for the
-	// overlapping interval.
-	for (size_t a = 0; a < allRects.size(); ++a) {
-		for (size_t b = 0; b < allRects.size(); ++b) {
-			if (allRects[a].screen == allRects[b].screen) {
+	static const std::int64_t kFreeformAdjacencyTolerancePx = 32;
+	bool valid = true;
+	const auto addLink = [this, &candidate, &valid](
+		const std::string& source, EDirection direction,
+		float sourceStart, float sourceEnd, const std::string& destination,
+		float destinationStart, float destinationEnd) {
+		CellMap::iterator sourceCell =
+			candidate.find(getCanonicalName(source));
+		if (sourceCell == candidate.end()) {
+			valid = false;
+			return;
+		}
+		const CellEdge* existingSource = NULL;
+		const CellEdge* existingDestination = NULL;
+		if (sourceCell->second.getLink(
+				direction, (sourceStart + sourceEnd) / 2.0f,
+				existingSource, existingDestination) &&
+			!CaselessCmp::equal(
+				existingDestination->getName(), destination)) {
+			valid = false;
+			return;
+		}
+		const CellEdge sourceEdge(
+			direction, Interval(sourceStart, sourceEnd));
+		const CellEdge destinationEdge(
+			destination, direction,
+			Interval(destinationStart, destinationEnd));
+		if (!sourceCell->second.add(sourceEdge, destinationEdge)) {
+			valid = false;
+		}
+	};
+	for (CellMap::const_iterator source = m_map.begin();
+		 source != m_map.end(); ++source) {
+		for (CellMap::const_iterator target = m_map.begin();
+			 target != m_map.end(); ++target) {
+			if (source == target) {
 				continue;
 			}
-			const GlobalRect& ra = allRects[a];
-			const GlobalRect& rb = allRects[b];
 
-			// ra bottom (y+ h) == rb top (y)  -> ra below rb is on top
-			if (std::abs((ra.y + ra.h) - rb.y) <= kFreeformAdjacencyTolerancePx) {
-				SInt32 ox0 = std::max(ra.x, rb.x);
-				SInt32 ox1 = std::min(ra.x + ra.w, rb.x + rb.w);
-				if (ox0 < ox1) {
-					float a0 = float(ox0 - ra.x) / float(ra.w);
-					float a1 = float(ox1 - ra.x) / float(ra.w);
-					float b0 = float(ox0 - rb.x) / float(rb.w);
-					float b1 = float(ox1 - rb.x) / float(rb.w);
-					connect(ra.screen, kBottom, a0, a1, rb.screen, b0, b1);
-				}
-			}
-			// ra top == rb bottom
-			if (std::abs((rb.y + rb.h) - ra.y) <= kFreeformAdjacencyTolerancePx) {
-				SInt32 ox0 = std::max(ra.x, rb.x);
-				SInt32 ox1 = std::min(ra.x + ra.w, rb.x + rb.w);
-				if (ox0 < ox1) {
-					float a0 = float(ox0 - ra.x) / float(ra.w);
-					float a1 = float(ox1 - ra.x) / float(ra.w);
-					float b0 = float(ox0 - rb.x) / float(rb.w);
-					float b1 = float(ox1 - rb.x) / float(rb.w);
-					connect(ra.screen, kTop, a0, a1, rb.screen, b0, b1);
-				}
-			}
-			// ra right == rb left
-			if (std::abs((ra.x + ra.w) - rb.x) <= kFreeformAdjacencyTolerancePx) {
-				SInt32 oy0 = std::max(ra.y, rb.y);
-				SInt32 oy1 = std::min(ra.y + ra.h, rb.y + rb.h);
-				if (oy0 < oy1) {
-					float a0 = float(oy0 - ra.y) / float(ra.h);
-					float a1 = float(oy1 - ra.y) / float(ra.h);
-					float b0 = float(oy0 - rb.y) / float(rb.h);
-					float b1 = float(oy1 - rb.y) / float(rb.h);
-					connect(ra.screen, kRight, a0, a1, rb.screen, b0, b1);
-				}
-			}
-			// ra left == rb right
-			if (std::abs((rb.x + rb.w) - ra.x) <= kFreeformAdjacencyTolerancePx) {
-				SInt32 oy0 = std::max(ra.y, rb.y);
-				SInt32 oy1 = std::min(ra.y + ra.h, rb.y + rb.h);
-				if (oy0 < oy1) {
-					float a0 = float(oy0 - ra.y) / float(ra.h);
-					float a1 = float(oy1 - ra.y) / float(ra.h);
-					float b0 = float(oy0 - rb.y) / float(rb.h);
-					float b1 = float(oy1 - rb.y) / float(rb.h);
-					connect(ra.screen, kLeft, a0, a1, rb.screen, b0, b1);
-				}
+			const ScreenPosition& sourcePosition =
+				m_screenPositions.find(source->first)->second;
+			const ScreenPosition& targetPosition =
+				m_screenPositions.find(target->first)->second;
+			const std::vector<barrier::DisplayLink> links =
+				barrier::deriveDisplayLinks(
+					source->first, m_displayRects.find(source->first)->second,
+					{sourcePosition.x, sourcePosition.y},
+					target->first, m_displayRects.find(target->first)->second,
+					{targetPosition.x, targetPosition.y},
+					kFreeformAdjacencyTolerancePx);
+			for (std::vector<barrier::DisplayLink>::const_iterator link =
+					 links.begin(); link != links.end(); ++link) {
+				addLink(link->source, link->sourceSide,
+						link->sourceInterval.first,
+						link->sourceInterval.second, link->target,
+						link->targetInterval.first,
+						link->targetInterval.second);
 			}
 		}
 	}
+	if (valid) {
+		m_map.swap(candidate);
+	}
+	return valid;
+}
+
+bool
+Config::validateTopologyProfile(const TopologyProfile& profile) const
+{
+	try {
+		profile.topology.validate();
+	}
+	catch (const std::invalid_argument&) {
+		return false;
+	}
+	if (profile.topology.empty() ||
+		profile.key.size() != 64 ||
+		profile.key != profile.topology.profileKey()) {
+		return false;
+	}
+	if (profile.screenPositions.empty() ||
+		profile.screenPositions.size() != m_map.size() ||
+		profile.screenPositions.size() != profile.displayRects.size()) {
+		return false;
+	}
+	for (ScreenPositionMap::const_iterator position =
+			 profile.screenPositions.begin();
+		 position != profile.screenPositions.end(); ++position) {
+		if (!isCanonicalName(position->first) ||
+			profile.displayRects.find(position->first) ==
+				profile.displayRects.end()) {
+			return false;
+		}
+	}
+	for (DisplayRectMap::const_iterator screen = profile.displayRects.begin();
+		 screen != profile.displayRects.end(); ++screen) {
+		if (!isCanonicalName(screen->first) ||
+			profile.screenPositions.find(screen->first) ==
+				profile.screenPositions.end() ||
+			screen->second.empty()) {
+			return false;
+		}
+		for (const ScreenRect& rect : screen->second) {
+			if (rect.w <= 0 || rect.h <= 0) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool
+Config::addTopologyProfile(const TopologyProfile& profile)
+{
+	TopologyProfile normalized = profile;
+	try {
+		normalized.topology = profile.topology.normalized();
+	}
+	catch (const std::invalid_argument&) {
+		return false;
+	}
+	const std::string computedKey = normalized.topology.profileKey();
+	normalized.key = computedKey;
+	if (profile.key != computedKey ||
+		!validateTopologyProfile(normalized) ||
+		m_topologyProfiles.find(computedKey) != m_topologyProfiles.end()) {
+		return false;
+	}
+
+	ScreenPositionMap canonicalPositions;
+	for (ScreenPositionMap::const_iterator position =
+			 normalized.screenPositions.begin();
+		 position != normalized.screenPositions.end(); ++position) {
+		canonicalPositions[getCanonicalName(position->first)] =
+			position->second;
+	}
+	normalized.screenPositions.swap(canonicalPositions);
+	DisplayRectMap canonicalRects;
+	for (DisplayRectMap::const_iterator screen =
+			 normalized.displayRects.begin();
+		 screen != normalized.displayRects.end(); ++screen) {
+		canonicalRects[getCanonicalName(screen->first)] = screen->second;
+	}
+	normalized.displayRects.swap(canonicalRects);
+	m_topologyProfiles.insert(std::make_pair(computedKey, normalized));
+	return true;
+}
+
+void
+Config::clearRuntimeLinks()
+{
+	for (CellMap::iterator cell = m_map.begin(); cell != m_map.end(); ++cell) {
+		for (EDirection direction = kFirstDirection;
+			 direction <= kLastDirection;
+			 direction = static_cast<EDirection>(direction + 1)) {
+			cell->second.remove(direction);
+		}
+	}
+}
+
+void
+Config::clearTopologyProfiles()
+{
+	m_topologyProfiles.clear();
+	clearRuntimeLinks();
+	m_screenPositions.clear();
+	m_displayRects.clear();
+	m_activeTopologyProfileKey.clear();
+}
+
+Config::TopologySelectionResult
+Config::selectTopology(const barrier::DisplayTopology& topology,
+		const DisplayRectMap& liveDisplayRects)
+{
+	const auto deactivate = [this](TopologySelectionResult result) {
+		CellMap candidate = m_map;
+		for (CellMap::iterator cell = candidate.begin();
+			 cell != candidate.end(); ++cell) {
+			for (EDirection direction = kFirstDirection;
+				 direction <= kLastDirection;
+				 direction = static_cast<EDirection>(direction + 1)) {
+				cell->second.remove(direction);
+			}
+		}
+		ScreenPositionMap emptyPositions;
+		DisplayRectMap emptyRects;
+		std::string emptyKey;
+		m_map.swap(candidate);
+		m_screenPositions.swap(emptyPositions);
+		m_displayRects.swap(emptyRects);
+		m_activeTopologyProfileKey.swap(emptyKey);
+		return result;
+	};
+
+	if (topology.empty()) {
+		return deactivate(TopologySelectionResult::Unavailable);
+	}
+
+	barrier::DisplayTopology normalized;
+	try {
+		normalized = topology.normalized();
+	}
+	catch (const std::invalid_argument&) {
+		return deactivate(TopologySelectionResult::Unknown);
+	}
+	const std::string key = normalized.profileKey();
+	TopologyProfileMap::const_iterator profile = m_topologyProfiles.find(key);
+	if (profile == m_topologyProfiles.end() ||
+		!validateTopologyProfile(profile->second)) {
+		return deactivate(TopologySelectionResult::Unknown);
+	}
+
+	Config candidate(m_events);
+	candidate.m_map = m_map;
+	candidate.m_nameToCanonicalName = m_nameToCanonicalName;
+	candidate.m_screenPositions = profile->second.screenPositions;
+	candidate.m_displayRects = profile->second.displayRects;
+	for (DisplayRectMap::const_iterator live = liveDisplayRects.begin();
+		 live != liveDisplayRects.end(); ++live) {
+		const std::string canonical = getCanonicalName(live->first);
+		if (!canonical.empty()) {
+			candidate.m_displayRects[canonical] = live->second;
+		}
+	}
+	candidate.m_activeTopologyProfileKey = key;
+	if (!candidate.generateFreeformLinks()) {
+		return deactivate(TopologySelectionResult::Unknown);
+	}
+	m_map.swap(candidate.m_map);
+	m_screenPositions.swap(candidate.m_screenPositions);
+	m_displayRects.swap(candidate.m_displayRects);
+	m_activeTopologyProfileKey.swap(candidate.m_activeTopologyProfileKey);
+	return TopologySelectionResult::Known;
+}
+
+const Config::TopologyProfileMap&
+Config::topologyProfiles() const
+{
+	return m_topologyProfiles;
+}
+
+const std::string&
+Config::activeTopologyProfileKey() const
+{
+	return m_activeTopologyProfileKey;
 }
 
 void
@@ -320,6 +650,10 @@ Config::removeAllScreens()
 {
 	m_map.clear();
 	m_nameToCanonicalName.clear();
+	m_displayRects.clear();
+	m_screenPositions.clear();
+	m_topologyProfiles.clear();
+	m_activeTopologyProfileKey.clear();
 }
 
 bool Config::addAlias(const std::string& canonical, const std::string& alias)
@@ -400,16 +734,37 @@ bool Config::connect(const std::string& srcName, EDirection srcSide,
 {
 	assert(srcSide >= kFirstDirection && srcSide <= kLastDirection);
 
-	// find source cell
-	CellMap::iterator index = m_map.find(getCanonicalName(srcName));
-	if (index == m_map.end()) {
+	const bool invalidatesActive = !m_activeTopologyProfileKey.empty();
+	CellMap candidate;
+	CellMap* target = &m_map;
+	if (invalidatesActive) {
+		candidate = m_map;
+		for (CellMap::iterator cell = candidate.begin();
+			 cell != candidate.end(); ++cell) {
+			for (EDirection direction = kFirstDirection;
+				 direction <= kLastDirection;
+				 direction = static_cast<EDirection>(direction + 1)) {
+				cell->second.remove(direction);
+			}
+		}
+		target = &candidate;
+	}
+
+	CellMap::iterator index = target->find(getCanonicalName(srcName));
+	if (index == target->end()) {
 		return false;
 	}
 
-	// add link
 	CellEdge srcEdge(srcSide, Interval(srcStart, srcEnd));
 	CellEdge dstEdge(dstName, srcSide, Interval(dstStart, dstEnd));
-	return index->second.add(srcEdge, dstEdge);
+	if (!index->second.add(srcEdge, dstEdge)) {
+		return false;
+	}
+	if (invalidatesActive) {
+		m_map.swap(candidate);
+		m_activeTopologyProfileKey.clear();
+	}
+	return true;
 }
 
 bool Config::disconnect(const std::string& srcName, EDirection srcSide)
@@ -423,7 +778,13 @@ bool Config::disconnect(const std::string& srcName, EDirection srcSide)
 	}
 
 	// disconnect side
-	index->second.remove(srcSide);
+	if (!m_activeTopologyProfileKey.empty()) {
+		clearRuntimeLinks();
+		m_activeTopologyProfileKey.clear();
+	}
+	else {
+		index->second.remove(srcSide);
+	}
 
 	return true;
 }
@@ -439,7 +800,13 @@ bool Config::disconnect(const std::string& srcName, EDirection srcSide, float po
 	}
 
 	// disconnect side
-	index->second.remove(srcSide, position);
+	if (!m_activeTopologyProfileKey.empty()) {
+		clearRuntimeLinks();
+		m_activeTopologyProfileKey.clear();
+	}
+	else {
+		index->second.remove(srcSide, position);
+	}
 
 	return true;
 }
@@ -716,7 +1083,11 @@ Config::hasLockToScreenAction() const
 bool
 Config::operator==(const Config& x) const
 {
-	if (m_barrierAddress != x.m_barrierAddress) {
+	if (m_barrierAddress.isValid() != x.m_barrierAddress.isValid()) {
+		return false;
+	}
+	if (m_barrierAddress.isValid() &&
+		m_barrierAddress != x.m_barrierAddress) {
 		return false;
 	}
 	if (m_map.size() != x.m_map.size()) {
@@ -728,6 +1099,9 @@ Config::operator==(const Config& x) const
 
 	// compare global options
 	if (m_globalOptions != x.m_globalOptions) {
+		return false;
+	}
+	if (m_hasLockToScreenAction != x.m_hasLockToScreenAction) {
 		return false;
 	}
 
@@ -753,6 +1127,13 @@ Config::operator==(const Config& x) const
 			!CaselessCmp::equal(index1->second, index2->second)) {
 			return false;
 		}
+	}
+
+	if (!screenPositionsEqual(m_screenPositions, x.m_screenPositions) ||
+		!displayRectsEqual(m_displayRects, x.m_displayRects) ||
+		!topologyProfilesEqual(m_topologyProfiles, x.m_topologyProfiles) ||
+		m_activeTopologyProfileKey != x.m_activeTopologyProfileKey) {
+		return false;
 	}
 
 	// compare input filters
@@ -812,6 +1193,7 @@ Config::readSection(ConfigReadContext& s)
 	static const char s_screens[] = "screens";
 	static const char s_links[]   = "links";
 	static const char s_aliases[] = "aliases";
+	static const char s_topologyProfiles[] = "topology-profiles";
 
     std::string line;
 	if (!s.readLine(line)) {
@@ -847,6 +1229,9 @@ Config::readSection(ConfigReadContext& s)
 	}
 	else if (name == s_aliases) {
 		readSectionAliases(s);
+	}
+	else if (name == s_topologyProfiles) {
+		readSectionTopologyProfiles(s);
 	}
 	else {
 		throw XConfigRead(s, "unknown section name \"%{1}\"", name);
@@ -1198,6 +1583,156 @@ Config::readSectionAliases(ConfigReadContext& s)
 		}
 	}
 	throw XConfigRead(s, "unexpected end of aliases section");
+}
+
+void
+Config::readSectionTopologyProfiles(ConfigReadContext& s)
+{
+	bool versionSeen = false;
+	bool inProfile = false;
+	bool topologyVersionSeen = false;
+	TopologyProfile profile;
+	std::string line;
+	while (s.readLine(line)) {
+		if (line == "end") {
+			if (inProfile) {
+				throw XConfigRead(s, "topology profile is missing end-profile");
+			}
+			if (!versionSeen) {
+				throw XConfigRead(s, "topology profile section version is missing");
+			}
+			return;
+		}
+
+		if (line == "end-profile") {
+			if (!inProfile || !topologyVersionSeen ||
+				!addTopologyProfile(profile)) {
+				throw XConfigRead(s, "invalid or duplicate topology profile");
+			}
+			inProfile = false;
+			topologyVersionSeen = false;
+			profile = TopologyProfile();
+			continue;
+		}
+
+		std::istringstream parser(line);
+		std::string directive;
+		std::string equals;
+		parser >> directive >> equals;
+		if (!parser || equals != "=") {
+			throw XConfigRead(s, "invalid topology profile record");
+		}
+
+		if (!inProfile) {
+			if (directive == "version") {
+				int version;
+				std::string trailing;
+				if (versionSeen || !(parser >> version) ||
+					(parser >> trailing) || version != 1) {
+					throw XConfigRead(s, "unsupported topology profile section version");
+				}
+				versionSeen = true;
+			}
+			else if (directive == "profile") {
+				std::string trailing;
+				if (!versionSeen || !(parser >> profile.key) ||
+					(parser >> trailing)) {
+					throw XConfigRead(s, "invalid topology profile header");
+				}
+				inProfile = true;
+			}
+			else {
+				throw XConfigRead(s, "unexpected topology profile record");
+			}
+			continue;
+		}
+
+		if (directive == "topology-version") {
+			int version;
+			std::string trailing;
+			if (topologyVersionSeen || !(parser >> version) ||
+				(parser >> trailing) ||
+				version != barrier::DisplayTopology::kIdentityVersion) {
+				throw XConfigRead(s, "unsupported topology identity version");
+			}
+			topologyVersionSeen = true;
+		}
+		else if (directive == "display") {
+			std::string stableIdHex;
+			std::string stableId;
+			long long x;
+			long long y;
+			long long width;
+			long long height;
+			long long rotation;
+			int primary;
+			std::string trailing;
+			if (!topologyVersionSeen ||
+				!(parser >> stableIdHex >> x >> y >> width >> height >>
+				  rotation >> primary) ||
+				(parser >> trailing) ||
+				!hexDecode(stableIdHex, stableId) ||
+				!fitsSInt32(x) || !fitsSInt32(y) ||
+				!fitsSInt32(width) || !fitsSInt32(height) ||
+				rotation < std::numeric_limits<int>::min() ||
+				rotation > std::numeric_limits<int>::max() ||
+				(primary != 0 && primary != 1)) {
+				throw XConfigRead(s, "invalid topology display record");
+			}
+			profile.topology.displays.push_back({
+				stableId,
+				{static_cast<SInt32>(x), static_cast<SInt32>(y),
+				 static_cast<SInt32>(width), static_cast<SInt32>(height)},
+				static_cast<int>(rotation),
+				primary == 1
+			});
+		}
+		else if (directive == "position") {
+			std::string screenHex;
+			std::string screen;
+			long long x;
+			long long y;
+			std::string trailing;
+			if (!topologyVersionSeen ||
+				!(parser >> screenHex >> x >> y) ||
+				(parser >> trailing) ||
+				!hexDecode(screenHex, screen) ||
+				!fitsSInt32(x) || !fitsSInt32(y) ||
+				profile.screenPositions.find(screen) !=
+					profile.screenPositions.end()) {
+				throw XConfigRead(s, "invalid topology screen position");
+			}
+			profile.screenPositions[screen] = {
+				static_cast<SInt32>(x), static_cast<SInt32>(y)
+			};
+		}
+		else if (directive == "rect") {
+			std::string screenHex;
+			std::string screen;
+			long long x;
+			long long y;
+			long long width;
+			long long height;
+			std::string trailing;
+			if (!topologyVersionSeen ||
+				!(parser >> screenHex >> x >> y >> width >> height) ||
+				(parser >> trailing) ||
+				!hexDecode(screenHex, screen) ||
+				!fitsSInt32(x) || !fitsSInt32(y) ||
+				!fitsSInt32(width) || !fitsSInt32(height)) {
+				throw XConfigRead(s, "invalid topology display rectangle");
+			}
+			const ScreenRect rect = {
+				static_cast<SInt32>(x), static_cast<SInt32>(y),
+				static_cast<SInt32>(width), static_cast<SInt32>(height)
+			};
+			profile.displayRects[screen].push_back(rect);
+		}
+		else {
+			throw XConfigRead(s, "unknown topology profile record");
+		}
+	}
+	throw XConfigRead(s, "unexpected end of topology profiles section");
 }
 
 
@@ -1950,14 +2485,17 @@ operator<<(std::ostream& s, const Config& config)
 								screen != config.end(); ++screen) {
         s << "\t" << screen->c_str() << ":\n";
 
-		for (Config::link_const_iterator
-				link = config.beginNeighbor(*screen),
-				nend = config.endNeighbor(*screen); link != nend; ++link) {
-			s << "\t\t" << Config::dirName(link->first.getSide()) <<
-				Config::formatInterval(link->first.getInterval()) <<
-				" = " << link->second.getName().c_str() <<
-				Config::formatInterval(link->second.getInterval()) <<
-                "\n";
+		if (config.m_activeTopologyProfileKey.empty()) {
+			for (Config::link_const_iterator
+					link = config.beginNeighbor(*screen),
+					nend = config.endNeighbor(*screen);
+				 link != nend; ++link) {
+				s << "\t\t" << Config::dirName(link->first.getSide()) <<
+					Config::formatInterval(link->first.getInterval()) <<
+					" = " << link->second.getName().c_str() <<
+					Config::formatInterval(link->second.getInterval()) <<
+					"\n";
+			}
 		}
 	}
     s << "end\n";
@@ -1988,6 +2526,51 @@ operator<<(std::ostream& s, const Config& config)
             s << "\t\t" << index->second.c_str() << "\n";
 		}
         s << "end\n";
+	}
+
+	if (!config.m_topologyProfiles.empty()) {
+		s << "section: topology-profiles\n";
+		s << "\tversion = 1\n";
+		for (Config::TopologyProfileMap::const_iterator profile =
+				 config.m_topologyProfiles.begin();
+			 profile != config.m_topologyProfiles.end(); ++profile) {
+			s << "\tprofile = " << profile->first << "\n";
+			s << "\t\ttopology-version = "
+			  << barrier::DisplayTopology::kIdentityVersion << "\n";
+			const barrier::DisplayTopology topology =
+				profile->second.topology.normalized();
+			for (const barrier::DisplayTopologyEntry& display :
+				 topology.displays) {
+				s << "\t\tdisplay = " << hexEncode(display.stableId)
+				  << " " << display.logicalBounds.x
+				  << " " << display.logicalBounds.y
+				  << " " << display.logicalBounds.w
+				  << " " << display.logicalBounds.h
+				  << " " << display.rotationDegrees
+				  << " " << (display.primary ? 1 : 0) << "\n";
+			}
+			for (Config::ScreenPositionMap::const_iterator position =
+					 profile->second.screenPositions.begin();
+				 position != profile->second.screenPositions.end();
+				 ++position) {
+				s << "\t\tposition = " << hexEncode(position->first)
+				  << " " << position->second.x
+				  << " " << position->second.y << "\n";
+			}
+			for (Config::DisplayRectMap::const_iterator screen =
+					 profile->second.displayRects.begin();
+				 screen != profile->second.displayRects.end(); ++screen) {
+				for (const ScreenRect& rect : screen->second) {
+					s << "\t\trect = " << hexEncode(screen->first)
+					  << " " << rect.x
+					  << " " << rect.y
+					  << " " << rect.w
+					  << " " << rect.h << "\n";
+				}
+			}
+			s << "\tend-profile\n";
+		}
+		s << "end\n";
 	}
 
 	// options section

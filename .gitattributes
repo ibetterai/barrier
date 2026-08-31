@@ -1,0 +1,2 @@
+# Unified-diff context lines use a single marker space by definition.
+dist/macos/qtbase-5.15.19-xcode26.patch -whitespace

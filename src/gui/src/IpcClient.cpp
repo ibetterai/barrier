@@ -119,6 +119,18 @@ void IpcClient::sendCommand(const QString& command, ElevateMode const elevate)
     stream.writeRawData(elevateBuf, 1);
 }
 
+bool IpcClient::sendReload()
+{
+    if (m_Socket->state() != QAbstractSocket::ConnectedState) {
+        return false;
+    }
+    if (m_Socket->write(kIpcMsgReload, 4) != 4) {
+        m_Socket->abort();
+        return false;
+    }
+    return true;
+}
+
 void IpcClient::handleReadLogLine(const QString& text)
 {
     readLogLine(text);

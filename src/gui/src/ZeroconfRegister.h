@@ -39,7 +39,9 @@ public:
     ZeroconfRegister(QObject* parent = 0);
     ~ZeroconfRegister();
 
-    void registerService(const ZeroconfRecord& record, quint16 servicePort);
+    void registerService(const ZeroconfRecord& record, quint16 servicePort,
+                         const QMap<QString, QByteArray>& txt);
+    bool updateTxt(const QMap<QString, QByteArray>& txt);
     inline ZeroconfRecord registeredRecord() const { return finalRecord; }
 
 signals:
@@ -57,5 +59,6 @@ private:
 private:
     DNSServiceRef m_DnsServiceRef;
     QSocketNotifier* m_pSocket;
+    bool m_registrationFailed;
     ZeroconfRecord finalRecord;
 };

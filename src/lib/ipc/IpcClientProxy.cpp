@@ -112,6 +112,14 @@ IpcClientProxy::handleData(const Event&, void*)
         else if (memcmp(code, kIpcMsgCommand, 4) == 0) {
             m = parseCommand();
         }
+        else if (memcmp(code, kIpcMsgReload, 4) == 0) {
+            if (m_clientType != kIpcClientGui) {
+                LOG((CLOG_WARN "rejected ipc reload from non-gui client"));
+                disconnect();
+                return;
+            }
+            m = new IpcReloadMessage();
+        }
         else {
             LOG((CLOG_ERR "invalid ipc message"));
             disconnect();
@@ -148,6 +156,10 @@ IpcClientProxy::send(const IpcMessage& message)
 
     case kIpcShutdown:
         ProtocolUtil::writef(&m_stream, kIpcMsgShutdown);
+        break;
+
+    case kIpcReload:
+        ProtocolUtil::writef(&m_stream, kIpcMsgReload);
         break;
 
     default:

@@ -55,6 +55,12 @@ public:
     virtual ~IpcShutdownMessage();
 };
 
+class IpcReloadMessage : public IpcMessage {
+public:
+    IpcReloadMessage();
+    virtual ~IpcReloadMessage();
+};
+
 
 class IpcLogLineMessage : public IpcMessage {
 public:

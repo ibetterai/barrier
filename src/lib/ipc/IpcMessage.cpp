@@ -47,6 +47,15 @@ IpcShutdownMessage::~IpcShutdownMessage()
 {
 }
 
+IpcReloadMessage::IpcReloadMessage() :
+    IpcMessage(kIpcReload)
+{
+}
+
+IpcReloadMessage::~IpcReloadMessage()
+{
+}
+
 IpcLogLineMessage::IpcLogLineMessage(const std::string& logLine) :
     IpcMessage(kIpcLogLine),
     m_logLine(logLine)

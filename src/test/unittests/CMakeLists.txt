@@ -36,6 +36,39 @@ if (NOT "platform/OSXScreenTests.cpp" IN_LIST sources AND
     NOT "${CMAKE_CURRENT_SOURCE_DIR}/platform/OSXScreenTests.cpp" IN_LIST sources)
     list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/platform/OSXScreenTests.cpp")
 endif()
+if (NOT "base/Sha256Tests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/base/Sha256Tests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/base/Sha256Tests.cpp")
+endif()
+if (NOT "base/EventQueueTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/base/EventQueueTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/base/EventQueueTests.cpp")
+endif()
+if (NOT "barrier/DisplayTopologyTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayTopologyTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayTopologyTests.cpp")
+endif()
+if (NOT "barrier/TopologyProfileConfigTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/barrier/TopologyProfileConfigTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/barrier/TopologyProfileConfigTests.cpp")
+endif()
+if (NOT "server/DisplayTopologyStateMachineTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/server/DisplayTopologyStateMachineTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/server/DisplayTopologyStateMachineTests.cpp")
+endif()
+if (NOT "server/ServerTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/server/ServerTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/server/ServerTests.cpp")
+endif()
+if (NOT "server/ClientWakeRequestTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/server/ClientWakeRequestTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/server/ClientWakeRequestTests.cpp")
+endif()
+if (NOT "net/NetworkAddressSelectionTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/net/NetworkAddressSelectionTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/net/NetworkAddressSelectionTests.cpp")
+endif()
+
 
 file(GLOB_RECURSE remove_platform "platform/*")
 list(REMOVE_ITEM headers ${remove_platform})

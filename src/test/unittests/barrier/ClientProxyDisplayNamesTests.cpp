@@ -84,6 +84,20 @@ public:
     bool parse(const UInt8* code) { return parseMessage(code); }
 };
 
+class CapturingEventQueue : public TestEventQueue {
+public:
+    void addEvent(const Event& event) override
+    {
+        ++eventCount;
+        lastType = event.getType();
+        lastTarget = event.getTarget();
+    }
+
+    int eventCount = 0;
+    Event::Type lastType = Event::kUnknown;
+    void* lastTarget = nullptr;
+};
+
 std::vector<UInt32> twoRectDdis()
 {
     std::vector<UInt32> rects;
@@ -179,6 +193,24 @@ TEST(ClientProxyDisplayNamesTests, ddisPeerReportsRealDisplayRects)
     EXPECT_EQ(1920, displays[0].w);
     EXPECT_EQ(1920, displays[1].x);
     EXPECT_EQ(1080, displays[1].w);
+}
+
+TEST(ClientProxyDisplayNamesTests, ddisEmitsShapeChangedForLiveTopologyRefresh)
+{
+    CapturingEventQueue events;
+    Wire wire;
+    std::vector<UInt32> rects = oneRectDdis();
+    wire.add(kMsgDDisplayInfo + 4, &rects);
+
+    ScriptedStream* stream = new ScriptedStream;
+    stream->in = wire.bytes;
+    ClientProxy1_0Test proxy("peer", stream, &events);
+    proxy.setPeerMinorVersion(7);
+
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DDIS")));
+    EXPECT_EQ(1, events.eventCount);
+    EXPECT_EQ(events.forIScreen().shapeChanged(), events.lastType);
+    EXPECT_EQ(proxy.getEventTarget(), events.lastTarget);
 }
 
 TEST(ClientProxyDisplayNamesTests, ddisPeerPreservesPortraitRectOrientation)

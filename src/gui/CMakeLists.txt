@@ -9,14 +9,30 @@ set (CMAKE_INCLUDE_CURRENT_DIR ON)
 # files that are used both in tests and the app
 set(GUI_COMMON_SOURCE_FILES
     src/Action.cpp
+    src/ClientEndpointPolicy.cpp
+    src/ClientIdentityResolverQueue.cpp
+    src/ClientPresenceRegistry.cpp
     src/FreeformLayoutSettings.cpp
+    src/ProximityConfig.cpp
+    src/ProximityConnectionPolicy.cpp
+    src/ProximitySignalFilter.cpp
+    src/TopologyProfileStore.cpp
+    src/TopologyStatusParser.cpp
     src/Hotkey.cpp
     src/KeySequence.cpp
 )
 
 set(GUI_COMMON_HEADER_FILES
     src/Action.h
+    src/ClientEndpointPolicy.h
+    src/ClientIdentityResolverQueue.h
+    src/ClientPresenceRegistry.h
     src/FreeformLayoutSettings.h
+    src/ProximityConfig.h
+    src/ProximityConnectionPolicy.h
+    src/ProximitySignalFilter.h
+    src/TopologyProfileStore.h
+    src/TopologyStatusParser.h
     src/Hotkey.h
     src/KeySequence.h
 )
@@ -58,13 +74,20 @@ set(GUI_SOURCE_FILES
     src/ZeroconfRegister.cpp
     src/ZeroconfServer.cpp
     src/ZeroconfService.cpp
+    src/ZeroconfWake.cpp
     src/ZeroconfThread.cpp
     src/FreeformServerConfigWidget.cpp
     src/FreeformServerConfigWidget.h
 )
 
 if (APPLE)
-    list(APPEND GUI_SOURCE_FILES src/MacWindowActivation.mm)
+    list(APPEND GUI_SOURCE_FILES
+        src/MacWindowActivation.mm
+        src/MacProximityController.mm
+        src/MacProximityController.h
+        src/ProximitySettingsDialog.cpp
+        src/ProximitySettingsDialog.h
+    )
 endif()
 
 set(GUI_HEADER_FILES
@@ -103,10 +126,12 @@ set(GUI_HEADER_FILES
     src/TrayIconActivation.h
     src/VersionChecker.h
     src/ZeroconfBrowser.h
+    src/ZeroconfEndpointLogPolicy.h
     src/ZeroconfRecord.h
     src/ZeroconfRegister.h
     src/ZeroconfServer.h
     src/ZeroconfService.h
+    src/ZeroconfWake.h
     src/ZeroconfThread.h
 )
 
@@ -122,6 +147,7 @@ set(GUI_UI_FILES
     src/ServerConfigDialogBase.ui
     src/SettingsDialogBase.ui
     src/SetupWizardBase.ui
+    src/ProximitySettingsDialogBase.ui
 )
 
 if (WIN32)
@@ -155,7 +181,13 @@ elseif (APPLE)
     find_library(APPSERVICES_LIB ApplicationServices)
     find_library(APPKIT_LIB AppKit)
     find_library(IOKIT_LIB IOKit)
-    target_link_libraries(barrier ${APPSERVICES_LIB} ${APPKIT_LIB} ${IOKIT_LIB})
+    find_library(COREBLUETOOTH_LIB CoreBluetooth)
+    target_link_libraries(barrier
+        ${APPSERVICES_LIB}
+        ${APPKIT_LIB}
+        ${IOKIT_LIB}
+        ${COREBLUETOOTH_LIB}
+    )
 else()
     target_link_libraries (barrier dns_sd)
 endif()
@@ -174,27 +206,66 @@ endif()
 
 if (BARRIER_BUILD_TESTS)
     set(GUI_TEST_SOURCE_FILES
+        test/ClientEndpointPolicyTests.cpp
+        test/ClientIdentityResolverQueueTests.cpp
+        test/ClientPresenceRegistryTests.cpp
         test/FreeformServerConfigWidgetTests.cpp
         test/KeySequenceTests.cpp
         test/ServerConfigPersistenceTests.cpp
+        test/ProximityConfigTests.cpp
+        test/ProximityConnectionPolicyTests.cpp
+        test/ProximitySettingsDialogUiTests.cpp
+        test/ProximitySignalFilterTests.cpp
+        test/TopologyProfileStoreTests.cpp
+        test/TopologyStatusParserTests.cpp
         test/TrayIconActivationTests.cpp
         test/HotkeyTests.cpp
+        test/ZeroconfRecordTests.cpp
+        test/ZeroconfServicePolicyTests.cpp
         test/main.cpp
+        src/AddClientDialog.cpp
+        src/BaseConfig.cpp
         src/FreeformServerConfigWidget.cpp
+        src/Screen.cpp
+        src/ServerConfig.cpp
+        ../lib/barrier/DisplayGeometry.cpp
+        ../lib/barrier/DisplayTopology.cpp
+        ../lib/base/Sha256.cpp
         src/FreeformServerConfigWidget.h
     )
+
+    if (APPLE)
+        list(APPEND GUI_TEST_SOURCE_FILES
+            test/ProximitySettingsDialogTests.cpp
+            test/ZeroconfBrowserTests.cpp
+            src/MacProximityController.mm
+            src/MacProximityController.h
+            src/ProximitySettingsDialog.cpp
+            src/ProximitySettingsDialog.h
+            src/ZeroconfBrowser.cpp
+            src/ZeroconfBrowser.h
+        )
+    endif()
 
     add_executable(guiunittests
         ${GUI_TEST_SOURCE_FILES}
         ${GUI_COMMON_SOURCE_FILES}
         ${GUI_COMMON_HEADER_FILES}
+        ${GUI_UI_FILES}
     )
+    set_property(TARGET guiunittests PROPERTY AUTOUIC_SEARCH_PATHS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
     add_test(guiunittests guiunittests)
 
     target_include_directories(guiunittests PUBLIC ../../ext)
-    target_link_libraries(guiunittests gtest gmock Qt5::Core Qt5::Widgets Qt5::Network ${libs})
+    target_link_libraries(guiunittests gtest gmock Qt5::Core Qt5::Widgets Qt5::Network ${OPENSSL_LIBS} ${libs})
     if (APPLE)
-        target_link_libraries(guiunittests ${APPSERVICES_LIB} ${APPKIT_LIB} ${IOKIT_LIB})
+        target_link_libraries(guiunittests
+            ${APPSERVICES_LIB}
+            ${APPKIT_LIB}
+            ${IOKIT_LIB}
+            ${COREBLUETOOTH_LIB}
+        )
     endif()
 endif()

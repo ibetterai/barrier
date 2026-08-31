@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Use the same verbose variable as CMake
 [ "$VERBOSE" = "1" ] && set -x
@@ -10,6 +10,13 @@ B_MACOS="Barrier.app/Contents/MacOS"
 B_VERSION="@BARRIER_VERSION@"
 B_BINDIR="@CMAKE_RUNTIME_OUTPUT_DIRECTORY@"
 B_BUILDTYPE="@CMAKE_BUILD_TYPE@"
+B_DEPLOYQT="@BARRIER_MACDEPLOYQT_EXECUTABLE@"
+B_DEPLOYMENT_TARGET="@BARRIER_MACOS_DEPLOYMENT_TARGET@"
+B_ARCH="@CMAKE_OSX_ARCHITECTURES@"
+B_RELEASE_AUDIT="@BARRIER_MACOS_RELEASE_AUDIT@"
+B_VERIFY_SCRIPT="@BARRIER_MACOS_VERIFY_SCRIPT@"
+B_MANIFEST="Barrier.app/Contents/Resources/macho-manifest.txt"
+B_DMG="Barrier-$B_VERSION.dmg"
 B_BARRIERC="Barrier.app/Contents/MacOS/barrierc"
 B_BARRIERS="Barrier.app/Contents/MacOS/barriers"
 
@@ -18,6 +25,19 @@ info() { tput bold 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true
 error() { tput bold 2>/dev/null || true; tput setaf 1 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
 success() { tput bold 2>/dev/null || true; tput setaf 2 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
 warn() { tput bold 2>/dev/null || true; tput setaf 3 2>/dev/null || true; echo "$@"; tput sgr0 2>/dev/null || true ; }
+
+audit_bundle() {
+    if [ "$B_RELEASE_AUDIT" != "ON" ]; then
+        warn "Public-release bundle audit is disabled"
+        return 0
+    fi
+
+    info "Auditing bundled Mach-O files"
+    bash "$B_VERIFY_SCRIPT" --app Barrier.app \
+        --target "$B_DEPLOYMENT_TARGET" \
+        --arch "$B_ARCH" \
+        --manifest "$B_MANIFEST"
+}
 
 info "Checking for bundle contents"
 if [ ! -d "Barrier.app/Contents" ]; then
@@ -32,42 +52,56 @@ if [ -d "$B_MACOS" ]; then
 fi
 
 info "Copying binaries into bundle"
-# Copy the folder instead of globbing unquoted path
-cp -r "$B_BINDIR" "$B_MACOS" || exit 1
-
-# Check for macdeployqt on MacPorts
-if which -s port ; then
-    info "MacPorts found, searching for macdeployqt"
-    DEPLOYQT="$(port contents qt5-qttools | grep --only --max-count 1 '/.*macdeployqt')"
-    if [ ! -x "$DEPLOYQT" ]; then
-        error "Please install package qt5-qttools"
+rm -f "$B_MANIFEST"
+rm -f "$B_DMG"
+mkdir -p "$B_MACOS" || exit 1
+for B_BINARY in barrier barriers barrierc; do
+    if [ ! -x "$B_BINDIR/$B_BINARY" ]; then
+        error "Missing executable: $B_BINDIR/$B_BINARY"
         exit 1
     fi
+
+    cp "$B_BINDIR/$B_BINARY" "$B_MACOS/$B_BINARY" || exit 1
+done
+
+if [ ! -x "$B_DEPLOYQT" ]; then
+    error "Configured macdeployqt is not executable: $B_DEPLOYQT"
+    exit 1
 fi
 
-# Check for macdeployqt on Homebrew
-if which -s brew ; then
-    info "Homebrew found, searching for macdeployqt"
-    DEPLOYQT="$(brew list qt@5 | grep --only '/.*macdeployqt' | head -1)"
-    if [ ! -x "$DEPLOYQT" ]; then
-        error "Please install package qt"
-        exit 1
-    fi
-fi
-
-# Use macdeployqt to include libraries and create dmg
+# Run macdeployqt without -dmg so the complete app can be audited, when
+# requested, before signing or disk-image creation.
 if [ "$B_BUILDTYPE" = "Release" ]; then
-    info "Building Release disk image (dmg)"
-    "$DEPLOYQT" Barrier.app -dmg \
+    "$B_DEPLOYQT" Barrier.app \
     -executable="$B_BARRIERC" \
     -executable="$B_BARRIERS" || exit 1
-    mv "Barrier.dmg" "Barrier-$B_VERSION.dmg" || exit 1
-    success "Created Barrier-$B_VERSION.dmg"
+
+    audit_bundle || exit 1
+
+    info "Building Release disk image (dmg)"
+    B_DMG_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/barrier-dmg.XXXXXX")" || exit 1
+    if ! ditto Barrier.app "$B_DMG_STAGING/Barrier.app"; then
+        rm -r "$B_DMG_STAGING"
+        exit 1
+    fi
+    ln -s /Applications "$B_DMG_STAGING/Applications" || {
+        rm -r "$B_DMG_STAGING"
+        exit 1
+    }
+    if ! hdiutil create -volname Barrier -srcfolder "$B_DMG_STAGING" \
+        -ov -format UDZO "$B_DMG"; then
+        rm -r "$B_DMG_STAGING"
+        exit 1
+    fi
+    rm -r "$B_DMG_STAGING"
+    success "Created $B_DMG"
 else
     warn "Disk image (dmg) only created for Release builds"
     info "Building debug bundle"
-    "$DEPLOYQT" Barrier.app -no-strip \
+    "$B_DEPLOYQT" Barrier.app -no-strip \
     -executable="$B_BARRIERC" \
     -executable="$B_BARRIERS" || exit 1
+
+    audit_bundle || exit 1
     success "Bundle created successfully"
 fi

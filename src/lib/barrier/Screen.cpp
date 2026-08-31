@@ -495,6 +495,12 @@ Screen::getDisplays(std::vector<ScreenRect>& displays) const
 {
     m_screen->getDisplays(displays);
 }
+barrier::DisplayTopology
+Screen::getDisplayTopology() const
+{
+    return m_screen->getDisplayTopology();
+}
+
 
 void
 Screen::getDisplayNames(std::vector<std::string>& names) const

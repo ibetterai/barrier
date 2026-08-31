@@ -10,12 +10,15 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
 
 ## Download
 
-- Latest Apple Silicon macOS build:
-  [Barrier 3.3.1](https://github.com/ibetterai/barrier/releases/tag/v3.3.1)
-- Current DMG:
-  [Barrier-3.3.1-release-arm64.dmg](https://github.com/ibetterai/barrier/releases/download/v3.3.1/Barrier-3.3.1-release-arm64.dmg)
+- Use the [GitHub Releases](https://github.com/ibetterai/barrier/releases)
+  section to download the latest Apple Silicon macOS build or a previous build.
+- See the [changelog](CHANGELOG.md) and
+  [feature and fix ledger](docs/history/feature-fix-ledger.md) for the
+  reconstructed public product history.
 
-This fork currently publishes Apple Silicon macOS packages only.
+Barrier 3.4.0 and later packages from this fork target Apple Silicon and macOS
+11 or later. These packages are Developer ID signed, Apple notarized, and
+stapled for offline Gatekeeper verification.
 
 ## What this fork adds
 
@@ -24,6 +27,14 @@ This fork currently publishes Apple Silicon macOS packages only.
 - Non-rectangular and L-shaped monitor routing.
 - Freeform server configuration that follows the live macOS Displays layout
   when displays move and the configuration is re-saved.
+- Exact display-topology profiles that restore the saved freeform layout for
+  each physical macOS display arrangement and pause cross-machine switching
+  when the current arrangement is unknown.
+- Optional macOS Bluetooth proximity gating, so a client starts only while its
+  explicitly paired server is nearby, discoverable, and topology-ready, with
+  pairing-scoped Connect and Departure signal thresholds.
+- Optional client signal sharing, so a server can display the filtered RSSI and
+  last-seen state of associated nearby clients while Proximity Settings is open.
 - Cross-machine edge routing based on real display rectangles, while preserving
   normal local macOS transitions between displays on the same host.
 - Freeform edge-gap tolerance so visually adjacent screens keep their intended
@@ -40,23 +51,132 @@ This fork currently publishes Apple Silicon macOS packages only.
 - Magic Mouse two-finger left/right Spaces swipe forwarding. When the pointer is
   on a macOS client, the server detects the swipe intent and the client injects
   the native `Control` + left/right Space-switching shortcut.
-- Barrier 2.4.0 interoperability restored in Barrier 3.3.0. Protocol 1.6 peers
-  receive only 2.4.0-compatible messages; 3.x peers keep enhanced display
+- This fork Barrier (3.3.0 and above) restores interoperability with Legacy
+  Barrier (2.4.0 and before). Protocol 1.6 peers receive only
+  Legacy Barrier-compatible messages; this fork's peers keep enhanced display
   geometry and display names.
+
+## Dynamic display topology profiles
+
+When the server's macOS display arrangement is stable, open the server
+configuration, arrange the Barrier screens, and save the profile. Barrier
+associates that freeform layout with the exact physical display topology. It
+selects the matching profile automatically after a display change and pauses
+cross-machine switching when no saved profile matches.
+
+A brief zero-display interval, such as a monitor reconnecting, uses a grace
+period instead of immediately disconnecting clients. Save a new profile after
+intentionally changing the physical display arrangement.
+
+## macOS proximity-gated connections
+
+Proximity gating is opt-in and available on macOS:
+
+1. On the server, open **Proximity Settings…** from the Barrier menu and enable
+   **Enable proximity advertising**.
+2. On the client, open **Proximity Settings…**, select the nearby server, and
+   choose **Pair**.
+3. Enable **Enable proximity-gated connection**, adjust the **Connect signal**
+   and **Departure signal** values if needed, and save the settings.
+
+The client starts only when the paired Bluetooth identity is nearby, the exact
+paired Bonjour service is present, and the server reports a ready display
+topology. Bluetooth permission is required on both Macs.
+
+Bonjour controls proximity identity and readiness independently from the
+network route. With **Auto config** off, Barrier connects to the configured
+**Server IP** after the paired server becomes eligible. With **Auto config**
+on, Barrier connects through the paired Bonjour hostname instead.
+
+Each pairing defaults to connecting at `-75 dBm` or stronger and beginning the
+sustained-departure countdown at `-90 dBm` or weaker. The controls cover
+`-100 dBm` through `-30 dBm`; a saved pairing must keep Connect at least
+`15 dB` stronger than Departure. A less-negative value is stronger. **Reset
+defaults** restores `-75/-90` without re-pairing.
+
+To let the paired server display this client's nearby signal, enable **Share
+nearby signal with paired server** on the client. This option is off by default,
+including after an upgrade. An opted-in client appears after completing a
+normal Barrier connection and establishing an unambiguous local association.
+The server scans for its filtered RSSI only while the server's **Proximity
+Settings…** dialog is open. The client advertises an opaque, pair-scoped
+routing ID; it is a local routing hint, not Barrier authentication.
+
+Sleeping-client wake remains separate from Bluetooth signal sharing. Moving
+toward a configured offline client can request a rate-limited Bonjour network
+wake whether or not the server is scanning for RSSI. The client Mac must have
+**Wake for network access** enabled; Bluetooth presence alone is not a
+guaranteed Mac wake mechanism.
+
+If Bluetooth is temporarily unavailable, **Connect Anyway** bypasses only the
+Bluetooth check for the current app session. Bonjour identity, network
+availability, and topology readiness remain required. Choose **Resume
+Proximity Gating** to end the override.
+
+## Example L-shaped routing scenarios
+
+This fork Barrier (3.3.0 and above) is designed for layouts that Apple
+Universal Control does not handle well, especially when the useful
+cross-machine edge is only part of a display edge rather than a full
+rectangular side.
+
+### Two machines: client display in the server L-shape notch
+
+Use this when the server Mac has two displays:
+
+- a landscape display along the bottom
+- a portrait display on the right
+
+The client has one landscape display placed above the server's landscape
+display, in the open notch created by the server's L-shaped local layout:
+
+![Two-machine L-shaped layout: a landscape client display above a landscape server display, with a tall server portrait display on the right adjacent to both displays on its left.](doc/l-shaped-scenario-two-machines.svg)
+
+Barrier routes the pointer through the real adjacent edges instead of treating
+the server as one rectangular bounding box. The server Mac still owns the normal
+local transition between its landscape and portrait displays; Barrier owns only
+the cross-machine transition into the client display.
+
+### Three machines: portrait display belongs to a third machine
+
+Use this when the bottom landscape display is the server machine, the top
+landscape display is one client, and the right portrait display is another
+client:
+
+![Three-machine L-shaped layout: Client A landscape display above the server landscape display, with a tall Client B portrait display on the right adjacent to both displays on its left.](doc/l-shaped-scenario-three-machines.svg)
+
+Each remote machine contributes its own display rectangle. Barrier can route
+from the bottom server display to the top client through the notch, and from the
+server to the portrait client on the right, without requiring all three screens
+to collapse into one rectangle.
+
+### Four machines: Windows client on the left of the server
+
+Use this when the two-machine L-shaped layout also has a Windows machine on the
+left side of the server's bottom landscape display:
+
+![Four-machine layout: Windows client left of the server landscape display, macOS client above the server landscape display, and a tall server portrait display on the right adjacent to both landscape displays on its left.](doc/l-shaped-scenario-windows-left.svg)
+
+The Windows client can use the normal rectangular Barrier edge on the left,
+while this fork's macOS peers keep the enhanced L-shaped partial-edge routing on
+the top and right.
 
 ## Compatibility
 
-Barrier 3.3.1 is the recommended release from this fork.
+Use this fork Barrier (3.3.0 and above) for enhanced display geometry and
+Legacy Barrier (2.4.0 and before) compatibility.
 
-- Barrier 3.3.1 works with Barrier 2.4.0 peers by negotiating old-peer protocol
-  behavior and suppressing 3.x-only display metadata unless the peer supports it.
-- Barrier 3.x peers keep enhanced multi-display and L-shaped routing when both
-  sides support protocol 1.7.
-- Barrier 2.4.0 peers use rectangular-screen fallback behavior.
-- Barrier 3.2.0 is superseded and hidden because it may not interoperate with
-  Barrier 2.4.0 peers.
-- Barrier 3.3.1 keeps the 3.3.0 compatibility behavior and fixes freeform
-  partial-edge routing regressions in multi-monitor macOS layouts.
+- This fork Barrier (3.3.0 and above) works with Legacy Barrier (2.4.0 and
+  before) peers by negotiating old-peer protocol behavior and suppressing
+  newer display metadata unless the peer supports it.
+- This fork Barrier peers keep enhanced multi-display and L-shaped routing when
+  both sides support protocol 1.7.
+- Legacy Barrier (2.4.0 and before) peers use rectangular-screen fallback
+  behavior.
+- This fork Barrier's versions less than 3.3.0 are superseded because they may
+  not interoperate with Legacy Barrier (2.4.0 and before) peers.
+- This fork Barrier (3.3.0 and above) keeps old-peer compatibility and fixes
+  freeform partial-edge routing regressions in multi-monitor macOS layouts.
 
 ## Known limitations
 
@@ -71,7 +191,7 @@ Barrier 3.3.1 is the recommended release from this fork.
 
 ## Contact and support for this fork
 
-Use the GitHub issue tracker for project support.
+For issues specific to this macOS Apple Silicon fork, open a GitHub issue.
 
 ## Upstream Barrier
 

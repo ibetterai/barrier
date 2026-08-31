@@ -23,6 +23,8 @@ endif()
 
 add_library(base STATIC ${sources})
 
-if (UNIX)
+if (APPLE)
+    target_link_libraries(base common OpenSSL::Crypto)
+elseif (UNIX)
     target_link_libraries(base common)
 endif()

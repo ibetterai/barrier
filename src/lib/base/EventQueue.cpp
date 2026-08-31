@@ -111,16 +111,21 @@ EventQueue::loop()
     m_buffer->init();
     {
         Lock lock(m_readyMutex);
+
+        // Preserve FIFO order across the not-ready/ready boundary. Producers
+        // keep using m_pending until every older pending event is in the live
+        // buffer; only then may a newer producer enqueue there directly.
+        while (!m_pending.empty()) {
+            LOG((CLOG_DEBUG "add pending events to buffer"));
+            Event& event = m_pending.front();
+            addEventToBuffer(event);
+            m_pending.pop();
+        }
+
         *m_readyCondVar = true;
         m_readyCondVar->signal();
     }
     LOG((CLOG_DEBUG "event queue is ready"));
-    while (!m_pending.empty()) {
-        LOG((CLOG_DEBUG "add pending events to buffer"));
-        Event& event = m_pending.front();
-        addEventToBuffer(event);
-        m_pending.pop();
-    }
 
     Event event;
     getEvent(event);
@@ -304,11 +309,22 @@ EventQueue::addEvent(const Event& event)
         dispatchEvent(event);
         Event::deleteData(event);
     }
-    else if (!(*m_readyCondVar)) {
-        m_pending.push(event);
-    }
     else {
-        addEventToBuffer(event);
+        bool queuedPending = false;
+        {
+            // The ready transition and the decision to use m_pending are one
+            // handoff. Without this lock, a producer can observe "not ready",
+            // pause until loop() completes its one-time drain, then append an
+            // event that will never be delivered.
+            Lock lock(m_readyMutex);
+            if (!(*m_readyCondVar)) {
+                m_pending.push(event);
+                queuedPending = true;
+            }
+        }
+        if (!queuedPending) {
+            addEventToBuffer(event);
+        }
     }
 }
 
@@ -567,12 +583,14 @@ EventQueue::getSystemTarget()
 void
 EventQueue::waitForReady() const
 {
-    double timeout = ARCH->time() + 10;
+    Stopwatch timer(true);
     Lock lock(m_readyMutex);
 
-    while (!m_readyCondVar->wait()) {
-        if (ARCH->time() > timeout) {
-            throw std::runtime_error("event queue is not ready within 5 sec");
+    // Test the stored predicate before waiting so callers arriving after the
+    // one startup signal return immediately instead of blocking forever.
+    while (!(*m_readyCondVar)) {
+        if (!m_readyCondVar->wait(timer, 10.0)) {
+            throw std::runtime_error("event queue is not ready within 10 sec");
         }
     }
 }

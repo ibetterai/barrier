@@ -16,12 +16,58 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 cmake_minimum_required (VERSION 3.4)
+
+set (BARRIER_MACOS_DEPLOYMENT_TARGET "11.0" CACHE STRING
+     "Minimum macOS version supported by Barrier release artifacts")
+
+if (CMAKE_HOST_APPLE)
+    if (DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND
+        NOT "${CMAKE_OSX_DEPLOYMENT_TARGET}" STREQUAL "" AND
+        NOT "${CMAKE_OSX_DEPLOYMENT_TARGET}" STREQUAL "${BARRIER_MACOS_DEPLOYMENT_TARGET}")
+        message (FATAL_ERROR
+                 "CMAKE_OSX_DEPLOYMENT_TARGET (${CMAKE_OSX_DEPLOYMENT_TARGET}) "
+                 "must match BARRIER_MACOS_DEPLOYMENT_TARGET (${BARRIER_MACOS_DEPLOYMENT_TARGET})")
+    endif()
+
+    set (CMAKE_OSX_DEPLOYMENT_TARGET "${BARRIER_MACOS_DEPLOYMENT_TARGET}"
+         CACHE STRING "Minimum macOS deployment version" FORCE)
+endif()
+
 project (barrier C CXX)
 
 option (BARRIER_BUILD_GUI "Build the GUI" ON)
 option (BARRIER_BUILD_INSTALLER "Build the installer" ON)
 option (BARRIER_BUILD_TESTS "Build the tests" ON)
 option (BARRIER_USE_EXTERNAL_GTEST "Use external installation of Google Test framework" OFF)
+option (BARRIER_MACOS_RELEASE_AUDIT
+        "Audit the complete macOS app before creating a public release artifact"
+        OFF)
+
+if (APPLE AND BARRIER_MACOS_RELEASE_AUDIT)
+    include (CheckCCompilerFlag)
+    include (CheckCXXCompilerFlag)
+
+    set (BARRIER_SOURCE_FILE_PREFIX_MAP
+         "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=barrier-source")
+    set (BARRIER_BINARY_FILE_PREFIX_MAP
+         "-ffile-prefix-map=${CMAKE_BINARY_DIR}=barrier-build")
+    check_c_compiler_flag (
+        "${BARRIER_SOURCE_FILE_PREFIX_MAP}"
+        BARRIER_C_SUPPORTS_FILE_PREFIX_MAP)
+    check_cxx_compiler_flag (
+        "${BARRIER_SOURCE_FILE_PREFIX_MAP}"
+        BARRIER_CXX_SUPPORTS_FILE_PREFIX_MAP)
+    if (NOT BARRIER_C_SUPPORTS_FILE_PREFIX_MAP OR
+        NOT BARRIER_CXX_SUPPORTS_FILE_PREFIX_MAP)
+        message (FATAL_ERROR
+                 "BARRIER_MACOS_RELEASE_AUDIT requires compiler support for "
+                 "-ffile-prefix-map")
+    endif()
+
+    add_compile_options (
+        "${BARRIER_SOURCE_FILE_PREFIX_MAP}"
+        "${BARRIER_BINARY_FILE_PREFIX_MAP}")
+endif()
 
 set (CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set (CMAKE_CXX_STANDARD 14)
@@ -321,50 +367,9 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
         ${OPENSSL_ROOT}/lib/ssleay32.lib
     )
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-    find_program(APT_PROGRAM "apt")
-    find_program(BREW_PROGRAM "brew")
-    find_program(PORT_PROGRAM "port")
-
-    if (IS_DIRECTORY /opt/procursus AND APT_PROGRAM)
-        # procursus/apt
-        set (OPENSSL_ROOT /opt/procursus)
-
-        include_directories (BEFORE SYSTEM ${OPENSSL_ROOT}/include)
-
-        set (OPENSSL_LIBS
-            ${OPENSSL_ROOT}/lib/libssl.a
-            ${OPENSSL_ROOT}/lib/libcrypto.a
-        )
-    elseif (IS_DIRECTORY /opt/local AND PORT_PROGRAM)
-        # macports
-        set (OPENSSL_ROOT /opt/local)
-
-        set (OPENSSL_LIBS
-            ${OPENSSL_ROOT}/lib/libssl.a
-            ${OPENSSL_ROOT}/lib/libcrypto.a
-            z
-        )
-    elseif (IS_DIRECTORY /usr/local/opt/openssl AND BREW_PROGRAM)
-        # brew
-        set (OPENSSL_ROOT /usr/local/opt/openssl)
-
-        include_directories (BEFORE SYSTEM ${OPENSSL_ROOT}/include)
-
-        set (OPENSSL_LIBS
-            ${OPENSSL_ROOT}/lib/libssl.a
-            ${OPENSSL_ROOT}/lib/libcrypto.a
-        )
-    elseif (IS_DIRECTORY /opt/homebrew/opt/openssl AND BREW_PROGRAM)
-        # brew
-        set (OPENSSL_ROOT /opt/homebrew/opt/openssl)
-
-        include_directories (BEFORE SYSTEM ${OPENSSL_ROOT}/include)
-
-        set (OPENSSL_LIBS
-            ${OPENSSL_ROOT}/lib/libssl.a
-            ${OPENSSL_ROOT}/lib/libcrypto.a
-        )
-    endif()
+    set (OPENSSL_USE_STATIC_LIBS TRUE)
+    find_package (OpenSSL REQUIRED)
+    set (OPENSSL_LIBS OpenSSL::SSL OpenSSL::Crypto)
 
 elseif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     set (OPENSSL_LIBS ssl crypto)
@@ -414,13 +419,51 @@ if (${BARRIER_BUILD_INSTALLER})
 # macOS app Bundle
 #
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    if (BARRIER_MACOS_RELEASE_AUDIT AND
+        ("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "" OR
+         "${CMAKE_OSX_ARCHITECTURES}" MATCHES ";"))
+        message (FATAL_ERROR
+                 "BARRIER_MACOS_RELEASE_AUDIT requires one explicit "
+                 "CMAKE_OSX_ARCHITECTURES value")
+    endif()
+
     set (CMAKE_INSTALL_RPATH "@loader_path/../Libraries;@loader_path/../Frameworks")
     set (BARRIER_BUNDLE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist/macos/bundle)
     set (BARRIER_BUNDLE_DIR ${CMAKE_BINARY_DIR}/bundle)
     set (BARRIER_BUNDLE_APP_DIR ${BARRIER_BUNDLE_DIR}/Barrier.app)
     set (BARRIER_BUNDLE_BINARY_DIR ${BARRIER_BUNDLE_APP_DIR}/Contents/MacOS)
+    set (BARRIER_MACOS_VERIFY_SOURCE
+         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-macos-deployment-target.sh)
+    set (BARRIER_MACOS_CLOSURE_HELPER_SOURCE
+         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/macos-macho-closure.py)
+    set (BARRIER_MACOS_METADATA_SCANNER_SOURCE
+         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scan-protected-metadata.pl)
+    set (BARRIER_MACOS_VERIFY_SCRIPT ./verify-macos-deployment-target.sh)
+
+    find_package (Qt5 REQUIRED COMPONENTS Core Widgets Network)
+    get_target_property (BARRIER_QMAKE_EXECUTABLE Qt5::qmake IMPORTED_LOCATION)
+    if (NOT BARRIER_QMAKE_EXECUTABLE)
+        message (FATAL_ERROR "Could not resolve qmake from the configured Qt package")
+    endif()
+
+    get_filename_component (BARRIER_QT_BINARY_DIR "${BARRIER_QMAKE_EXECUTABLE}" DIRECTORY)
+    set (BARRIER_MACDEPLOYQT_EXECUTABLE "${BARRIER_QT_BINARY_DIR}/macdeployqt")
+    if (NOT EXISTS "${BARRIER_MACDEPLOYQT_EXECUTABLE}")
+        message (FATAL_ERROR
+                 "The configured Qt package does not provide macdeployqt at "
+                 "${BARRIER_MACDEPLOYQT_EXECUTABLE}")
+    endif()
 
     configure_files (${BARRIER_BUNDLE_SOURCE_DIR} ${BARRIER_BUNDLE_DIR})
+    configure_file (${BARRIER_MACOS_VERIFY_SOURCE}
+                    ${BARRIER_BUNDLE_DIR}/verify-macos-deployment-target.sh
+                    COPYONLY)
+    configure_file (${BARRIER_MACOS_CLOSURE_HELPER_SOURCE}
+                    ${BARRIER_BUNDLE_DIR}/macos-macho-closure.py
+                    COPYONLY)
+    configure_file (${BARRIER_MACOS_METADATA_SCANNER_SOURCE}
+                    ${BARRIER_BUNDLE_DIR}/scan-protected-metadata.pl
+                    COPYONLY)
 
     add_custom_target(Barrier_MacOS ALL
                       bash build_dist.sh
@@ -457,5 +500,41 @@ else()
 endif()
 
 enable_testing()
+
+if (APPLE AND BARRIER_BUILD_TESTS)
+    add_test (
+        NAME protected_metadata_scanner
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/scan-protected-metadata_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/scan-protected-metadata.pl"
+    )
+
+    add_test (
+        NAME macos_release_prefix_diagnostics
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/build-macos-release-prefix_diagnostics_test.sh"
+    )
+
+    add_test (
+        NAME macos_deployment_target_verifier
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/verify-macos-deployment-target_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-macos-deployment-target.sh"
+    )
+
+    if (BARRIER_MACOS_RELEASE_AUDIT)
+        configure_file (
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/macos-file-prefix-map-generated.cpp.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/macos-file-prefix-map-generated.cpp"
+            COPYONLY)
+        add_executable (
+            macos_file_prefix_map_probe
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/macos-file-prefix-map-probe.cpp"
+            "${CMAKE_CURRENT_BINARY_DIR}/macos-file-prefix-map-generated.cpp")
+        add_test (
+            NAME macos_file_prefix_map
+            COMMAND macos_file_prefix_map_probe)
+    endif()
+endif()
 
 add_subdirectory (src)

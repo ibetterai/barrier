@@ -1,0 +1,4 @@
+const char* binaryRootFile()
+{
+    return __FILE__;
+}

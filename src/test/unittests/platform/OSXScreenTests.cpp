@@ -19,6 +19,164 @@
 #include "barrier/DisplayGeometry.h"
 
 #include "test/global/gtest.h"
+#include <stdexcept>
+#include <thread>
+
+
+TEST(OSXScreenTests, clientBootstrapsGeometryFromOnlineDisplaysWhenActiveSetIsEmpty)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            false, true, 0, true, 1);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::Online, decision.source);
+    EXPECT_FALSE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, clientBootstrapsGeometryFromOnlineDisplaysWhenActiveQueryFails)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            false, false, 0, true, 1);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::Online, decision.source);
+    EXPECT_FALSE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, clientPreservesValidGeometryAcrossTransientEmptyDisplaySet)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+		OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            true, true, 0, false, 0);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_TRUE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, clientPreservesValidGeometryWhenActiveQueryFails)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+		OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            true, false, 0, false, 0);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_TRUE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, clientPreservesValidGeometryInsteadOfUsingOnlineFallback)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+		OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            true, true, 0, true, 1);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_TRUE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, publishesActiveDisplaysWhenAvailable)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::PrimaryServer,
+            true, true, 2, true, 3);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::Active, decision.source);
+    EXPECT_FALSE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, primaryPublishesEmptyInsteadOfUsingOnlineDisplay)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::PrimaryServer,
+            true, true, 0, true, 1);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_FALSE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, primaryRetriesQueryFailureWithoutPublishingOnlineDisplay)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::PrimaryServer,
+            true, false, 0, true, 1);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_TRUE(decision.preserveCurrentSnapshot);
+    EXPECT_TRUE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, clientLeavesColdStartEmptyWhenNoDisplaySetIsAvailable)
+{
+    const OSXScreen::DisplayRefreshDecision decision =
+        OSXScreen::decideDisplayRefresh(
+            OSXScreen::DisplayRefreshRole::SecondaryClient,
+            false, true, 0, false, 0);
+
+    EXPECT_EQ(OSXScreen::DisplayRefreshSource::None, decision.source);
+    EXPECT_FALSE(decision.preserveCurrentSnapshot);
+    EXPECT_FALSE(decision.retryRequired);
+}
+
+TEST(OSXScreenTests, beginConfigurationCallbackDoesNotCaptureOldGeometry)
+{
+    EXPECT_FALSE(OSXScreen::displayReconfigurationCaptureReady(
+        kCGDisplayBeginConfigurationFlag | kCGDisplaySetModeFlag));
+}
+
+TEST(OSXScreenTests, postConfigurationCallbackCapturesFreshGeometry)
+{
+    EXPECT_TRUE(OSXScreen::displayReconfigurationCaptureReady(
+        kCGDisplaySetModeFlag));
+}
+
+TEST(OSXScreenTests, staleRetryGenerationCannotPublishAfterNewCallback)
+{
+    EXPECT_TRUE(OSXScreen::displayRefreshGenerationIsCurrent(7, 7));
+    EXPECT_FALSE(OSXScreen::displayRefreshGenerationIsCurrent(7, 8));
+}
+
+TEST(OSXScreenTests, reEnablesEventTapAfterEveryRecoverableDisable)
+{
+    EXPECT_TRUE(OSXScreen::eventTapDisableRequiresReenable(
+        kCGEventTapDisabledByTimeout));
+    EXPECT_TRUE(OSXScreen::eventTapDisableRequiresReenable(
+        kCGEventTapDisabledByUserInput));
+    EXPECT_FALSE(OSXScreen::eventTapDisableRequiresReenable(
+        kCGEventMouseMoved));
+}
+
+TEST(OSXScreenTests, eventTapSourceAlwaysTargetsCocoaMainRunLoop)
+{
+    bool workerHasDistinctRunLoop = false;
+    bool selectedMainRunLoop = false;
+    std::thread worker([&]() {
+        CFRunLoopRef currentRunLoop = CFRunLoopGetCurrent();
+        CFRunLoopRef mainRunLoop = CFRunLoopGetMain();
+        workerHasDistinctRunLoop = currentRunLoop != mainRunLoop;
+        selectedMainRunLoop =
+            OSXScreen::selectEventTapRunLoop(currentRunLoop, mainRunLoop) ==
+                mainRunLoop;
+    });
+    worker.join();
+
+    ASSERT_TRUE(workerHasDistinctRunLoop);
+    EXPECT_TRUE(selectedMainRunLoop);
+}
+
 
 TEST(OSXScreenTests, selectsDisplayContainingEnterCoordinate)
 {
@@ -262,4 +420,118 @@ TEST(OSXScreenTests, displayLabelMatchesIndexResolution)
 
     EXPECT_EQ(-1, OSXScreen::displayIndexAt(displays, 5000, 5000));
     EXPECT_EQ("", barrier::displayLabelAt(displays, names, 5000, 5000));
+}
+
+TEST(OSXScreenTests, buildsLaptopDisplayTopologies)
+{
+    const OSXScreen::TopologyDisplayRecord internal = {
+        "internal", {0, 0, 1512, 982}, 0.0, true
+    };
+    const OSXScreen::TopologyDisplayRecord external = {
+        "external", {1512, -98, 1920, 1080}, 90.0, false
+    };
+
+    const barrier::DisplayTopology internalOnly =
+        OSXScreen::topologyFromDisplayRecords({internal});
+    ASSERT_EQ(1u, internalOnly.displays.size());
+    EXPECT_EQ("internal", internalOnly.displays[0].stableId);
+    EXPECT_EQ(0, internalOnly.displays[0].logicalBounds.x);
+    EXPECT_EQ(0, internalOnly.displays[0].logicalBounds.y);
+    EXPECT_EQ(0, internalOnly.displays[0].rotationDegrees);
+    EXPECT_TRUE(internalOnly.displays[0].primary);
+    EXPECT_FALSE(internalOnly.profileKey().empty());
+
+    const barrier::DisplayTopology mixed =
+        OSXScreen::topologyFromDisplayRecords({internal, external});
+    ASSERT_EQ(2u, mixed.displays.size());
+    EXPECT_EQ("external", mixed.displays[0].stableId);
+    EXPECT_EQ(1512, mixed.displays[0].logicalBounds.x);
+    EXPECT_EQ(-98, mixed.displays[0].logicalBounds.y);
+    EXPECT_FALSE(mixed.displays[0].primary);
+    EXPECT_EQ("internal", mixed.displays[1].stableId);
+    EXPECT_TRUE(mixed.displays[1].primary);
+
+    OSXScreen::TopologyDisplayRecord closedLidExternal = external;
+    closedLidExternal.logicalBounds = {0, 0, 1920, 1080};
+    closedLidExternal.primary = true;
+    const barrier::DisplayTopology externalOnly =
+        OSXScreen::topologyFromDisplayRecords({closedLidExternal});
+    ASSERT_EQ(1u, externalOnly.displays.size());
+    EXPECT_EQ("external", externalOnly.displays[0].stableId);
+    EXPECT_EQ(1920, externalOnly.displays[0].logicalBounds.w);
+    EXPECT_EQ(1080, externalOnly.displays[0].logicalBounds.h);
+    EXPECT_TRUE(externalOnly.displays[0].primary);
+    EXPECT_NE(internalOnly.profileKey(), externalOnly.profileKey());
+
+    EXPECT_TRUE(OSXScreen::topologyFromDisplayRecords({}).empty());
+}
+
+TEST(OSXScreenTests, topologyBuilderIsOrderStableAndRoundsQuarterTurns)
+{
+    const OSXScreen::TopologyDisplayRecord internal = {
+        "internal", {0, 0, 1512, 982}, 0.001, true
+    };
+    const OSXScreen::TopologyDisplayRecord external = {
+        "external", {1512, -98, 1920, 1080}, 89.999, false
+    };
+
+    const barrier::DisplayTopology first =
+        OSXScreen::topologyFromDisplayRecords({internal, external});
+    const barrier::DisplayTopology reversed =
+        OSXScreen::topologyFromDisplayRecords({external, internal});
+    EXPECT_EQ(first.profileKey(), reversed.profileKey());
+    ASSERT_EQ(2u, first.displays.size());
+    EXPECT_EQ("external", first.displays[0].stableId);
+    EXPECT_EQ(90, first.displays[0].rotationDegrees);
+    EXPECT_EQ(first.canonicalIdentity(), reversed.canonicalIdentity());
+}
+
+TEST(OSXScreenTests, topologyBuilderRejectsNonQuarterTurnRotation)
+{
+    const OSXScreen::TopologyDisplayRecord display = {
+        "internal", {0, 0, 1512, 982}, 45.0, true
+    };
+    EXPECT_THROW(OSXScreen::topologyFromDisplayRecords({display}),
+                 std::invalid_argument);
+}
+
+TEST(OSXScreenTests, topologyBuilderReturnsNormalizedSortedEntries)
+{
+    const OSXScreen::TopologyDisplayRecord primary = {
+        "internal", {100, 200, 1512, 982}, 0.0, true
+    };
+    const OSXScreen::TopologyDisplayRecord secondary = {
+        "external", {-1820, 102, 1920, 1080}, 90.0, false
+    };
+
+    const barrier::DisplayTopology topology =
+        OSXScreen::topologyFromDisplayRecords({primary, secondary});
+    ASSERT_EQ(2u, topology.displays.size());
+    EXPECT_EQ("external", topology.displays[0].stableId);
+    EXPECT_EQ(-1920, topology.displays[0].logicalBounds.x);
+    EXPECT_EQ(-98, topology.displays[0].logicalBounds.y);
+    EXPECT_EQ(1920, topology.displays[0].logicalBounds.w);
+    EXPECT_EQ(1080, topology.displays[0].logicalBounds.h);
+    EXPECT_EQ(90, topology.displays[0].rotationDegrees);
+    EXPECT_FALSE(topology.displays[0].primary);
+    EXPECT_EQ("internal", topology.displays[1].stableId);
+    EXPECT_EQ(0, topology.displays[1].logicalBounds.x);
+    EXPECT_EQ(0, topology.displays[1].logicalBounds.y);
+    EXPECT_TRUE(topology.displays[1].primary);
+}
+
+TEST(OSXScreenTests, topologyBuilderRejectsMissingStableIdentifier)
+{
+    const OSXScreen::TopologyDisplayRecord display = {
+        "", {0, 0, 1512, 982}, 0.0, true
+    };
+    EXPECT_THROW(OSXScreen::topologyFromDisplayRecords({display}),
+                 std::invalid_argument);
+}
+
+TEST(OSXScreenTests, normalizesDisplayIdentifiersToLowercase)
+{
+    EXPECT_EQ("abcdef01-2345-6789-abcd-ef0123456789",
+              OSXScreen::normalizeDisplayIdentifier(
+                  "ABCDEF01-2345-6789-ABCD-EF0123456789"));
 }

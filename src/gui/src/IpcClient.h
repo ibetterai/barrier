@@ -36,6 +36,7 @@ public:
 
     void sendHello();
     void sendCommand(const QString& command, ElevateMode elevate);
+    bool sendReload();
     void connectToHost();
     void disconnectFromHost();
 

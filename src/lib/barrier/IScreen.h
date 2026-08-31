@@ -20,6 +20,7 @@
 
 #include "barrier/clipboard_types.h"
 #include "barrier/protocol_types.h"
+#include "barrier/DisplayTopology.h"
 #include "base/Event.h"
 #include "base/EventTypes.h"
 #include "common/IInterface.h"
@@ -71,6 +72,19 @@ public:
     bounding box may report an empty list.
     */
     virtual void        getDisplays(std::vector<ScreenRect>& displays) const = 0;
+    //! Get the current local display topology
+    virtual barrier::DisplayTopology getDisplayTopology() const
+    {
+        SInt32 x, y, width, height;
+        getShape(x, y, width, height);
+        barrier::DisplayTopology topology;
+        if (width > 0 && height > 0) {
+            topology.displays.push_back(
+                {"virtual-desktop", {x, y, width, height}, 0, true});
+        }
+        return topology;
+    }
+
 
     //! Get per-display names
     /*!

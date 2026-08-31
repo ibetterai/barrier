@@ -25,6 +25,9 @@
 #include <QtGui>
 #include <QApplication>
 #include <QMessageBox>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QPushButton>
 
 ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, const QString& defaultScreenName) :
     QDialog(parent, Qt::WindowTitleHint | Qt::WindowSystemMenuHint),
@@ -33,9 +36,15 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     m_ServerConfig(config),
     m_ScreenSetupModel(serverConfig().screens(), serverConfig().numColumns(), serverConfig().numRows()),
     m_Message(""),
+    m_pFreeformWidget(nullptr),
+    m_pTopologyProfileStatusLabel(nullptr),
     m_LocalScreenName(defaultScreenName)
 {
     setupUi(this);
+    // This editable copy must never persist when the dialog is cancelled.
+    // Accepted state is copied back to the owning ServerConfig below.
+    m_ServerConfig.m_persistSettings = false;
+
 
     m_pCheckBoxHeartbeat->setChecked(serverConfig().hasHeartbeat());
     m_pSpinBoxHeartbeat->setValue(serverConfig().heartbeat());
@@ -71,15 +80,50 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     // Create the freeform canvas that shows the real L-shaped display
     // layout and lets the client's display be dragged into the notch.
     m_pFreeformWidget = new FreeformServerConfigWidget(this);
-    // Insert the freeform canvas right below the grid view
+    m_pTopologyProfileStatusLabel = new QLabel(this);
+    m_pTopologyProfileStatusLabel->setObjectName(
+        QStringLiteral("topologyProfileStatusLabel"));
+    m_pTopologyProfileStatusLabel->setWordWrap(true);
     QVBoxLayout* tabLayout = qobject_cast<QVBoxLayout*>(m_pTabScreens->layout());
     if (tabLayout) {
-        // The grid view is the second item in the tab's layout (after the hbox with trash)
-        // Insert the freeform widget after it
-        tabLayout->insertWidget(2, m_pFreeformWidget);
+        tabLayout->insertWidget(2, m_pTopologyProfileStatusLabel);
+        tabLayout->insertWidget(3, m_pFreeformWidget);
     }
     m_pFreeformWidget->setServerScreenName(m_LocalScreenName);
-    m_pFreeformWidget->syncFromSystemDisplays();
+    if (serverConfig().hasCurrentTopology()) {
+        m_pFreeformWidget->setServerDisplays(
+            serverConfig().currentServerDisplayRects());
+    }
+    else {
+        m_pFreeformWidget->syncFromSystemDisplays();
+    }
+
+    QPushButton* saveButton = m_pButtonBox->button(QDialogButtonBox::Ok);
+    if (serverConfig().topologyProfileLoadResult() !=
+        barrier::TopologyProfileStoreResult::Ok) {
+        m_pTopologyProfileStatusLabel->setText(
+            tr("Saved display profiles could not be loaded: %1. "
+               "Profile editing is disabled to protect the saved data.")
+                .arg(serverConfig().topologyProfileError()));
+        if (saveButton != nullptr) {
+            saveButton->setText(tr("Profiles Unavailable"));
+            saveButton->setEnabled(false);
+        }
+    }
+    else if (serverConfig().hasCurrentTopology()) {
+        const bool known = serverConfig().isCurrentTopologyKnown();
+        m_pTopologyProfileStatusLabel->setText(
+            known
+                ? tr("Editing the saved profile for this display arrangement.")
+                : tr("This display arrangement is not configured. Saving creates a new exact profile."));
+        if (saveButton != nullptr) {
+            saveButton->setText(known ? tr("Save Profile")
+                                      : tr("Create Profile"));
+        }
+    }
+    else {
+        m_pTopologyProfileStatusLabel->hide();
+    }
     // Seed every non-server screen into the freeform canvas. Earlier code
     // stopped after the first client, so a second 3.3.0 client could be
     // connected and present in ServerConfig but never drawn or persisted.
@@ -162,7 +206,7 @@ void ServerConfigDialog::showEvent(QShowEvent* event)
 {
     QDialog::showEvent(event);
 
-    if (m_pFreeformWidget) {
+    if (m_pFreeformWidget && !serverConfig().hasCurrentTopology()) {
         m_pFreeformWidget->syncFromSystemDisplays();
     }
 
@@ -203,6 +247,16 @@ void ServerConfigDialog::accept()
             serverConfig().setFreeformPosition(cname, pos.x(), pos.y());
         }
     }
+    if (serverConfig().hasCurrentTopology()) {
+        QString profileError;
+        if (!serverConfig().saveCurrentTopologyProfile(&profileError)) {
+            QMessageBox::warning(
+                this, tr("Configure server"),
+                tr("The display profile could not be saved: %1")
+                    .arg(profileError));
+            return;
+        }
+    }
     serverConfig().setRelativeMouseMoves(m_pCheckBoxRelativeMouseMoves->isChecked());
     serverConfig().setScreenSaverSync(m_pCheckBoxScreenSaverSync->isChecked());
     serverConfig().setWin32KeepForeground(m_pCheckBoxWin32KeepForeground->isChecked());
@@ -226,9 +280,18 @@ void ServerConfigDialog::accept()
     serverConfig().setEnableDragAndDrop(m_pCheckBoxEnableDragAndDrop->isChecked());
     serverConfig().setClipboardSharing(m_pCheckBoxEnableClipboard->isChecked());
 
-    // now that the dialog has been accepted, copy the new server config to the original one,
-    // which is a reference to the one in MainWindow.
-    setOrigServerConfig(serverConfig());
+    // Persist the editable copy before exposing it to the running server. A
+    // profile that is already active in memory must survive a crash or forced
+    // app restart immediately after this dialog closes.
+    QString persistenceError;
+    if (!m_OrigServerConfig.commitAcceptedConfiguration(
+            serverConfig(), &persistenceError)) {
+        QMessageBox::warning(
+            this, tr("Configure server"),
+            tr("The server configuration could not be saved: %1")
+                .arg(persistenceError));
+        return;
+    }
 
     QDialog::accept();
 }

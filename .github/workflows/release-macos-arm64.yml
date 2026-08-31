@@ -1,0 +1,245 @@
+name: release-macos-arm64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-macos-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      RELEASE_PREFIX: /tmp/barrier-release-prefix
+      RELEASE_WORK_DIR: /tmp/barrier-release-work
+      RELEASE_BUILD_DIR: /tmp/barrier-release-build
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+          for required_workflow in ci.yml public-audit.yml; do
+            successful_runs=$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/$required_workflow/runs" \
+                --method GET \
+                -f head_sha="$GITHUB_SHA" \
+                -f status=completed \
+                -f per_page=100 \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+            if test "$successful_runs" -le 0; then
+              echo 'required release check is not successful for this commit' >&2
+              exit 1
+            fi
+          done
+
+      - name: Load locked release platform
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          # shellcheck disable=SC1091
+          source dist/macos/release-dependencies.lock
+          test "$MACOS_RELEASE_ARCH" = arm64
+          test "$MACOSX_DEPLOYMENT_TARGET" = 11.0
+          printf 'MACOS_RELEASE_ARCH=%s\n' "$MACOS_RELEASE_ARCH" >> "$GITHUB_ENV"
+          printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "$MACOSX_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
+
+      - name: Restore locked dependency prefix
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.RELEASE_PREFIX }}
+          key: >-
+            barrier-release-prefix-${{ runner.os }}-${{ runner.arch }}-${{
+            hashFiles(
+              'dist/macos/release-dependencies.lock',
+              'dist/macos/qtbase-5.15.19-xcode26.patch',
+              'scripts/build-macos-release-prefix.sh',
+              'scripts/macos-macho-closure.py',
+              'scripts/scan-protected-metadata.pl',
+              'scripts/verify-macos-deployment-target.sh'
+            )
+            }}
+
+      - name: Build or verify locked dependency prefix
+        run: |
+          set -euo pipefail
+          build_log="$RUNNER_TEMP/release-prefix-build.log"
+          if ! scripts/build-macos-release-prefix.sh \
+              --prefix "$RELEASE_PREFIX" \
+              --work-dir "$RELEASE_WORK_DIR" \
+              --jobs 3 >"$build_log" 2>&1; then
+            echo 'locked dependency-prefix build failed' >&2
+            exit 1
+          fi
+          grep -E '^(PREFIX_CACHE_STATUS|PREFIX_CACHE_ID)=' "$build_log"
+          if grep -Eiq \
+              'was built for newer (macOS|OS X)|object file .* was built for newer|building for macOS.*linking in object file built for macOS' \
+              "$build_log"; then
+            echo 'dependency build used an object with a newer macOS target' >&2
+            exit 1
+          fi
+
+      - name: Configure locked arm64 release
+        run: |
+          set -euo pipefail
+          configure_log="$RUNNER_TEMP/release-configure.log"
+          cmake_bin=$(command -v cmake)
+          test -x "$cmake_bin"
+          export PATH="$RELEASE_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export CPPFLAGS="-I$RELEASE_PREFIX/include"
+          export LDFLAGS="-L$RELEASE_PREFIX/lib"
+          if ! "$cmake_bin" -S . -B "$RELEASE_BUILD_DIR" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="$MACOS_RELEASE_ARCH" \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+              -DCMAKE_OSX_SYSROOT=macosx \
+              -DCMAKE_PREFIX_PATH="$RELEASE_PREFIX" \
+              -DOPENSSL_ROOT_DIR="$RELEASE_PREFIX" \
+              -DOPENSSL_USE_STATIC_LIBS=TRUE \
+              -DBARRIER_BUILD_TESTS=ON \
+              -DBARRIER_MACOS_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+              -DBARRIER_MACOS_RELEASE_AUDIT=ON \
+              -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
+              -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+              >"$configure_log" 2>&1; then
+            echo 'locked release configuration failed' >&2
+            exit 1
+          fi
+
+      - name: Build complete product and audited app
+        run: |
+          set -euo pipefail
+          build_log="$RUNNER_TEMP/release-product-build.log"
+          cmake_bin=$(command -v cmake)
+          export PATH="$RELEASE_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if ! "$cmake_bin" --build "$RELEASE_BUILD_DIR" --parallel 3 \
+              >"$build_log" 2>&1; then
+            echo 'locked release build failed' >&2
+            exit 1
+          fi
+          if grep -Eiq \
+              'was built for newer (macOS|OS X)|object file .* was built for newer|building for macOS.*linking in object file built for macOS' \
+              "$build_log"; then
+            echo 'product build used an object with a newer macOS target' >&2
+            exit 1
+          fi
+
+      - name: Run release tests
+        env:
+          DYLD_FRAMEWORK_PATH: ${{ env.RELEASE_PREFIX }}/lib
+          QT_PLUGIN_PATH: ${{ env.RELEASE_PREFIX }}/plugins
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          test_log="$RUNNER_TEMP/release-tests.log"
+          if ! "$RELEASE_BUILD_DIR/bin/macos_file_prefix_map_probe" \
+              >"$test_log" 2>&1 \
+              || ! "$RELEASE_BUILD_DIR/bin/unittests" >>"$test_log" 2>&1 \
+              || ! "$RELEASE_BUILD_DIR/bin/guiunittests" >>"$test_log" 2>&1; then
+            echo 'release test suite failed' >&2
+            exit 1
+          fi
+
+      - name: Install pinned gitleaks
+        env:
+          GITLEAKS_SHA256: b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          install_dir="$RUNNER_TEMP/gitleaks-bin"
+          install_log="$RUNNER_TEMP/gitleaks-install.log"
+          asset="gitleaks_${GITLEAKS_VERSION}_darwin_arm64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${asset}"
+          if ! /usr/bin/curl \
+              --fail \
+              --location \
+              --proto '=https' \
+              --show-error \
+              --silent \
+              --tlsv1.2 \
+              --output "$archive" \
+              "$url" >"$install_log" 2>&1; then
+            echo 'gitleaks download failed' >&2
+            exit 1
+          fi
+          actual_sha=$(/usr/bin/shasum -a 256 "$archive" | /usr/bin/awk '{print $1}')
+          if test "$actual_sha" != "$GITLEAKS_SHA256"; then
+            echo 'gitleaks checksum verification failed' >&2
+            exit 1
+          fi
+          /bin/mkdir -p "$install_dir"
+          if ! /usr/bin/tar -xzf "$archive" -C "$install_dir" gitleaks \
+              >>"$install_log" 2>&1; then
+            echo 'gitleaks extraction failed' >&2
+            exit 1
+          fi
+          test -x "$install_dir/gitleaks" || {
+            echo 'gitleaks installation is incomplete' >&2
+            exit 1
+          }
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Recheck final app surface
+        run: |
+          set -euo pipefail
+          app="$RELEASE_BUILD_DIR/bundle/Barrier.app"
+          manifest="$app/Contents/Resources/macho-manifest.txt"
+          audit_log="$RUNNER_TEMP/release-app-audit.log"
+          test -d "$app"
+          test -s "$manifest"
+          if ! /bin/bash scripts/verify-macos-deployment-target.sh \
+              --app "$app" \
+              --target "$MACOSX_DEPLOYMENT_TARGET" \
+              --arch "$MACOS_RELEASE_ARCH" >"$audit_log" 2>&1; then
+            echo 'final app audit failed' >&2
+            exit 1
+          fi
+          grep -E \
+              '^(VERIFIED_ARCH|MAX_MACOS_DEPLOYMENT_TARGET|MACHO_FILES_VERIFIED)=' \
+              "$audit_log"
+          scripts/public-audit.sh
+
+      - name: Create unsigned release input
+        id: unsigned
+        run: |
+          set -euo pipefail
+          app="$RELEASE_BUILD_DIR/bundle/Barrier.app"
+          short_sha=${GITHUB_SHA:0:8}
+          archive="$RUNNER_TEMP/Barrier-app-unsigned-$short_sha.zip"
+          /usr/bin/ditto -c -k --keepParent "$app" "$archive"
+          archive_sha=$(/usr/bin/shasum -a 256 "$archive" | /usr/bin/awk '{print $1}')
+          version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw \
+              "$app/Contents/Info.plist")
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          {
+            printf '### Unsigned macOS arm64 release input\n\n'
+            printf -- "- Version: \`%s\`\n" "$version"
+            printf -- "- Commit: \`%s\`\n" "$GITHUB_SHA"
+            printf -- "- Minimum macOS: \`%s\`\n" "$MACOSX_DEPLOYMENT_TARGET"
+            printf -- "- SHA-256: \`%s\`\n" "$archive_sha"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned release input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Barrier-macos-arm64-unsigned-${{ github.sha }}
+          path: ${{ steps.unsigned.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 14

@@ -104,6 +104,7 @@ REGISTER_EVENT(ISocket, stopRetry)
 //
 
 REGISTER_EVENT(OSXScreen, confirmSleep)
+REGISTER_EVENT(OSXScreen, displayRefreshRetryRequested)
 
 //
 // ClientListener
@@ -177,6 +178,7 @@ REGISTER_EVENT(IPrimaryScreen, fakeInputEnd)
 //
 
 REGISTER_EVENT(IScreen, error)
+REGISTER_EVENT(IScreen, displayReconfigurationStarted)
 REGISTER_EVENT(IScreen, shapeChanged)
 REGISTER_EVENT(IScreen, suspend)
 REGISTER_EVENT(IScreen, resume)

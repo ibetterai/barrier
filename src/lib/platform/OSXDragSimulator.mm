@@ -20,11 +20,14 @@
 #import <CoreData/CoreData.h>
 #import <Cocoa/Cocoa.h>
 
+#include <atomic>
+
 #if defined(MAC_OS_X_VERSION_10_7)
 
 NSWindow* g_dragWindow = NULL;
 OSXDragView* g_dragView = NULL;
 NSString* g_ext = NULL;
+static std::atomic<bool> g_cocoaStopRequested(false);
 
 void
 runCocoaApp()
@@ -49,7 +52,9 @@ runCocoaApp()
 	[window setContentView: dragView];
 
 	NSLog(@"starting cocoa loop");
-	[NSApp run];
+	if (!g_cocoaStopRequested.exchange(false)) {
+		[NSApp run];
+	}
 
 	NSLog(@"cocoa: release");
 	[pool release];
@@ -58,7 +63,26 @@ runCocoaApp()
 void
 stopCocoaLoop()
 {
-	[NSApp stop: g_dragWindow];
+	// The Barrier event queue runs on a worker thread on macOS. AppKit's
+	// application loop belongs to the main thread, so stopping it directly
+	// from that worker can leave a --no-restart child alive after its network
+	// client has quit. Record early shutdowns, then marshal the stop onto the
+	// main queue and post an event so a blocked NSApplication loop wakes up.
+	g_cocoaStopRequested.store(true);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp stop:nil];
+		NSEvent* wakeEvent = [NSEvent
+			otherEventWithType:NSApplicationDefined
+			location:NSZeroPoint
+			modifierFlags:0
+			timestamp:0
+			windowNumber:0
+			context:nil
+			subtype:0
+			data1:0
+			data2:0];
+		[NSApp postEvent:wakeEvent atStart:YES];
+	});
 }
 
 void

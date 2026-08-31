@@ -214,7 +214,16 @@ ClientProxy1_0::parseMessage(const UInt8* code)
         return false;
     }
     else if (memcmp(code, kMsgDDisplayInfo, 4) == 0) {
-        return recvDisplayInfo();
+        if (recvDisplayInfo()) {
+            // DDIS can arrive after the ready/adoption event. Notify the
+            // server so live display rectangles are applied immediately
+            // instead of waiting for a later DINF geometry change.
+            m_events->addEvent(
+                Event(m_events->forIScreen().shapeChanged(),
+                      getEventTarget()));
+            return true;
+        }
+        return false;
     }
     else if (memcmp(code, kMsgDDisplayNames, 4) == 0) {
         // DDNM is a protocol 1.7 message: a peer that negotiated below 1.7

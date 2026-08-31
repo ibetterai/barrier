@@ -27,18 +27,28 @@
 #include <QSettings>
 #include <QProcess>
 #include <QThread>
+#include <QElapsedTimer>
+#include <QTimer>
 
 #include "ui_MainWindowBase.h"
 
 #include "ServerConfig.h"
 #include "AppConfig.h"
+#include "ClientEndpointPolicy.h"
 #include "VersionChecker.h"
+#include "ProximityConfig.h"
+#include "ProximityConnectionPolicy.h"
+#include "ProximitySignalFilter.h"
 #include "IpcClient.h"
 #include "Ipc.h"
 #include "LogWindow.h"
+#include "ZeroconfRecord.h"
+#include "TopologyStatusParser.h"
 
 #include <QMutex>
+#include <QSet>
 
+#include <memory>
 class QAction;
 class QMenu;
 class QLineEdit;
@@ -60,6 +70,9 @@ class ZeroconfService;
 class DataDownloader;
 class CommandProcess;
 class SslCertificate;
+#if defined(Q_OS_MAC)
+class MacProximityController;
+#endif
 
 class MainWindow : public QMainWindow, public Ui::MainWindowBase
 {
@@ -96,6 +109,10 @@ class MainWindow : public QMainWindow, public Ui::MainWindowBase
         void setVisible(bool visible);
         BarrierType barrier_type() const;
         int barrierState() const { return m_BarrierState; }
+        bool barrierRunIntended() const
+        {
+            return m_ExpectedRunningState == kStarted;
+        }
         QString hostname() const { return m_pLineEditHostname->text(); }
         QString configFilename();
         QString address();
@@ -104,11 +121,23 @@ class MainWindow : public QMainWindow, public Ui::MainWindowBase
         VersionChecker& versionChecker() { return m_VersionChecker; }
         QString getScreenName();
         ServerConfig& serverConfig() { return m_ServerConfig; }
+        barrier::ProximityConfig& proximityConfig()
+        {
+            return m_ProximityConfig;
+        }
+        bool serverDisplayReady() const
+        {
+            return m_HasTopologyStatus &&
+                   m_TopologyStatus.displayReady();
+        }
         void showConfigureServer(const QString& message);
         void showConfigureServer() { showConfigureServer(""); }
         void autoAddScreen(const QString name);
         void updateZeroconfService();
-        void serverDetected(const QString name);
+        void serverDetected(const QList<ZeroconfRecord>& records);
+
+signals:
+        void zeroconfRecordsChanged();
 
 public slots:
         void appendLogRaw(const QString& text);
@@ -145,16 +174,35 @@ public slots:
         void saveSettings();
         void setIcon(qBarrierState state);
         void setBarrierState(qBarrierState state);
+        barrier::ClientEndpointSelection clientEndpointSelection() const;
         bool clientArgs(QStringList& args, QString& app);
         bool serverArgs(QStringList& args, QString& app);
         void setStatus(const QString& status);
         void updateFromLogLine(const QString& line);
+        void resetTopologyStatusSession();
+        void processLogChunk(const QString& text, QString& buffer);
+        void startBarrierChild();
+        void stopBarrierChild(bool proximityPolicyStop = false);
+        bool isBarrierChildRunning() const;
+#if defined(Q_OS_MAC)
+        bool proximityClientEnabled() const;
+        QString pairedProximityEndpoint() const;
+        const ZeroconfRecord* pairedProximityServer() const;
+        barrier::ProximityInputs currentProximityInputs() const;
+        void configureProximityController();
+        void reconcileProximityClient();
+        void updateProximityStatus(barrier::ProximityPolicyState state);
+#endif
+        void flushPendingLogChunks();
+        bool reloadRunningServerConfig(QString& error);
         QString getIPAddresses();
         void stopService();
         void stopDesktop();
         void changeEvent(QEvent* event);
         bool event(QEvent* event);
         void retranslateMenuBar();
+        void showProximitySettings();
+        void toggleProximityOverride();
 #if defined(Q_OS_WIN)
         bool isServiceRunning(QString name);
 #else
@@ -174,6 +222,7 @@ public slots:
 
     private:
         QSettings& m_Settings;
+        barrier::ProximityConfig m_ProximityConfig;
         AppConfig* m_AppConfig;
         QProcess* m_pBarrier;
         int m_BarrierState;
@@ -187,6 +236,11 @@ public slots:
         QMenuBar* m_pMenuBar;
         QMenu* m_pMenuBarrier;
         QMenu* m_pMenuHelp;
+        QAction* m_pTopologyStatusAction;
+        QAction* m_pConfigureTopologyAction;
+        QAction* m_pProximitySettingsAction;
+        QAction* m_pProximityOverrideAction;
+        QAction* m_pProximityStatusAction;
         ZeroconfService* m_pZeroconfService;
         DataDownloader* m_pDataDownloader;
         QMessageBox* m_DownloadMessageBox;
@@ -200,12 +254,45 @@ public slots:
         SslCertificate* m_pSslCertificate;
         QStringList m_PendingClientNames;
         LogWindow *m_pLogWindow;
+        barrier::TopologyStatus m_TopologyStatus;
+        bool m_HasTopologyStatus;
+        QString m_StdoutLogBuffer;
+        QString m_StderrLogBuffer;
+        QSet<QString> m_NotifiedUnknownTopologyKeys;
+        QString m_ClickableUnknownTopologyKey;
+        QList<ZeroconfRecord> m_ZeroconfRecords;
+        bool m_ProximityManualOverride;
+#if defined(Q_OS_MAC)
+        MacProximityController* m_pProximityController;
+        barrier::ProximityConnectionPolicy m_ProximityPolicy;
+        barrier::ProximityRestartPolicy m_ProximityRestartPolicy;
+        barrier::ProximityProcessExitTracker m_ProximityProcessExitTracker;
+        std::unique_ptr<barrier::ProximitySignalFilter>
+            m_ProximitySignalFilter;
+        QElapsedTimer m_ProximityClock;
+        QTimer m_ProximityTimer;
+        QTimer m_ProximityRestartTimer;
+        bool m_ProximityBluetoothPermissionPending;
+        bool m_ProximityBluetoothAuthorized;
+        bool m_ProximityBluetoothAvailable;
+        bool m_ProximityChildRunning;
+        bool m_ProximityProtocolConnected;
+        bool m_ProximityScanning;
+        bool m_ProximityAdvertising;
+        bool m_ClientPresenceAdvertising;
+        bool m_ProximityStoppingChild;
+        bool m_ProximityRuntimeGatingEnabled;
+        bool m_ProximityRestartRequired;
+        QString m_ProximityRunningEndpoint;
+        QString m_ProximityAdvertisingId;
+        QString m_ClientPresenceAdvertisingId;
+#endif
 
         bool m_fingerprint_expanded = false;
 
 private slots:
     void on_m_pCheckBoxAutoConfig_toggled(bool checked);
-    void on_m_pComboServerList_currentIndexChanged(QString );
+    void on_m_pComboServerList_currentIndexChanged(QString);
     void on_m_pButtonReload_clicked();
     void installBonjour();
 

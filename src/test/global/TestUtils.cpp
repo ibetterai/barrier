@@ -23,12 +23,15 @@ namespace barrier {
 std::vector<std::uint8_t> generate_pseudo_random_bytes(std::size_t seed, std::size_t size)
 {
     std::mt19937_64 engine{seed};
-    std::uniform_int_distribution<int> dist{0, 255};
     std::vector<std::uint8_t> bytes;
 
     bytes.reserve(size);
     for (std::size_t i = 0; i < size; ++i) {
-        bytes.push_back(dist(engine));
+        // std::uniform_int_distribution does not guarantee the same mapping
+        // across standard-library implementations. Taking the high byte of the
+        // specified mt19937_64 sequence keeps test fixtures deterministic.
+        bytes.push_back(static_cast<std::uint8_t>(
+            engine() >> (std::mt19937_64::word_size - 8)));
     }
 
     return bytes;

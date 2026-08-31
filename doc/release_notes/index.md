@@ -3,6 +3,79 @@ Release notes
 
 [comment]: <> (towncrier release notes start)
 
+Barrier `3.4.0` ( `2026-08-31` )
+================================
+
+Features
+--------
+
+- Added macOS display-topology profiles that automatically select the exact saved freeform layout
+  and pause cross-machine switching for unknown or unavailable arrangements.
+- Added optional macOS proximity-gated connections that keep clients idle until their explicitly
+  paired server is nearby, discoverable, and topology-ready.
+- Added pairing-scoped Connect and Departure signal controls for proximity clients. Values cover
+  `-100 dBm` through `-30 dBm`, default to `-75/-90`, require at least `15 dB` of hysteresis, and
+  save atomically without re-pairing.
+- Added optional client signal sharing so the paired server can show associated clients' filtered
+  RSSI and last-seen state while Proximity Settings is open. Sharing is off by default on upgrades
+  and uses an opaque pair-scoped routing ID that is not authentication.
+- Added rate-limited Bonjour network wake when moving toward a configured offline client. Wake is
+  independent of Bluetooth signal scanning and preserves the normal Barrier reconnect path.
+
+Bug fixes
+---------
+
+- Fixed proximity pairing when Auto config is disabled, preserved Bonjour metadata through TXT
+  replacement, selected routable server addresses, and prevented clients from connecting to the
+  auxiliary Bonjour discovery port.
+- Fixed client recovery after paired-server restarts caused by display-layout changes and avoided
+  false signal-loss warnings from brief closed-lid RSSI dips.
+- Fixed multi-display link normalization so saved topology profiles activate and allow switching,
+  and persisted accepted display profiles immediately so they survive an app restart.
+- Fixed connected clients remaining unreachable until the server was reloaded after macOS sleep
+  and wake by keeping Quartz event taps on the Cocoa main run loop and re-enabling disabled taps.
+- Fixed proximity gating overriding a manually configured Server IP with the paired Bonjour
+  hostname when Auto config is disabled.
+- Suppressed repeated identical Zeroconf resolution snapshots and duplicate endpoint log lines
+  while preserving real service and topology-readiness updates.
+- Fixed Apple Silicon release packaging so Qt and OpenSSL come from checksum-pinned sources built
+  for macOS 11, every bundled Mach-O file is audited before signing, and release checks reject
+  local home paths and concrete private IPv4 addresses from tracked text sources and final app bundles.
+
+Barrier `3.3.1` ( `2026-08-29` )
+================================
+
+Bug fixes
+---------
+
+- Tolerated small coordinate-rounding gaps in freeform layouts so visually adjacent screens keep
+  their intended links.
+- Corrected partial-edge coordinate mapping so the pointer does not bounce back to the source
+  screen.
+- Improved client display-rectangle representation in the freeform layout.
+
+Barrier `3.3.0` ( `2026-08-29` )
+================================
+
+Compatibility
+-------------
+
+- Restored interoperability with Barrier 2.4.0 and earlier protocol peers.
+- Sent enhanced display geometry and display names only to peers that advertise support, while
+  retaining the rectangular fallback for older peers.
+
+Barrier `3.2.0` ( `2026-08-29`, draft and superseded )
+=====================================================
+
+Features and fixes
+------------------
+
+- Added native Apple Silicon packaging for macOS.
+- Added physical display geometry, display labels, freeform and L-shaped layouts, and real-edge
+  routing.
+- Added client display wake-on-entry, layout persistence, reliable login-session input, consistent
+  scrolling, menu activation fixes, and Magic Mouse Spaces gesture forwarding.
+
 Barrier `2.4.0` ( `2021-11-01` )
 ================================
 

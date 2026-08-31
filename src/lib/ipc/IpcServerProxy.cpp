@@ -64,6 +64,9 @@ IpcServerProxy::handleData(const Event&, void*)
         else if (memcmp(code, kIpcMsgShutdown, 4) == 0) {
             m = new IpcShutdownMessage();
         }
+        else if (memcmp(code, kIpcMsgReload, 4) == 0) {
+            m = new IpcReloadMessage();
+        }
         else {
             LOG((CLOG_ERR "invalid ipc message"));
             disconnect();
@@ -98,6 +101,10 @@ IpcServerProxy::send(const IpcMessage& message)
         ProtocolUtil::writef(&m_stream, kIpcMsgCommand, &command);
         break;
     }
+
+    case kIpcReload:
+        ProtocolUtil::writef(&m_stream, kIpcMsgReload);
+        break;
 
     default:
         LOG((CLOG_ERR "ipc message not supported: %d", message.type()));
