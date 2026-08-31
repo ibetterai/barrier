@@ -1,9 +1,6 @@
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Historical false positives only: upstream Crypto++ known-answer test vectors and macOS key-map constants."
-paths = [
-  '''tools/cryptopp561/TestVectors/.*''',
-  '''src/lib/platform/COSXKeyState[.]cpp''',
-]
+# Historical false positives are allowlisted only by their exact fingerprints
+# in .gitleaksignore. Path-level exclusions are intentionally forbidden so a
+# new finding in an inherited source path still fails the public audit.
