@@ -4,7 +4,7 @@ Mac OS X Readme
 To install on Mac OS X with the .zip distribution (first seen in 1.3.6) you must follow these steps:
 
   1. Extract the zip file to any location (usually double click will do this)
-  2. Open Terminal, and cd to the extracted directory (e.g. /path/to/example
+  2. Open Terminal, and cd to the extracted directory (e.g. /path/to/extracted-dir/)
   3. Copy the binaries to /usr/bin using: sudo cp barrier* /usr/bin
   4. Correct the permissions and ownership: sudo chown root:wheel /usr/bin/barrier*; sudo chmod 555 /usr/bin/barrier*
 

@@ -33,6 +33,13 @@ this is the codec-level bound applied before sending or parsing a payload.
 */
 static constexpr std::uint32_t kMaxDisplayNamesByteLength = PROTOCOL_MAX_STRING_LENGTH;
 
+//! True iff a peer announcing \p minorVersion can exchange display geometry.
+/*!
+Protocol 1.7 introduced the DDIS message.  Peers below 1.7 must keep
+bounding-box-only behavior and never receive DDIS.
+*/
+bool supportsDisplayGeometry(SInt16 minorVersion);
+
 //! True iff a peer announcing \p minorVersion can exchange display names.
 /*!
 Protocol 1.7 introduced the DDNM message.  Peers below 1.7 must keep

@@ -124,6 +124,53 @@ std::vector<UInt32> twoNameDdnm()
 
 } // namespace
 
+TEST(ClientProxyDisplayNamesTests, dinfOnlyPeerReportsSyntheticDisplayRect)
+{
+    TestEventQueue events;
+    Wire wire;
+    addInfo(wire);
+
+    ScriptedStream* stream = new ScriptedStream;
+    stream->in = wire.bytes;
+    ClientProxy1_0Test proxy("peer", stream, &events);
+    proxy.setPeerMinorVersion(6);
+
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DINF")));
+
+    std::vector<ScreenRect> displays;
+    proxy.getDisplays(displays);
+    ASSERT_EQ(1u, displays.size());
+    EXPECT_EQ(0, displays[0].x);
+    EXPECT_EQ(0, displays[0].y);
+    EXPECT_EQ(1920, displays[0].w);
+    EXPECT_EQ(1080, displays[0].h);
+}
+
+TEST(ClientProxyDisplayNamesTests, ddisPeerReportsRealDisplayRects)
+{
+    TestEventQueue events;
+    Wire wire;
+    addInfo(wire);
+    std::vector<UInt32> rects = twoRectDdis();
+    wire.add(kMsgDDisplayInfo + 4, &rects);
+
+    ScriptedStream* stream = new ScriptedStream;
+    stream->in = wire.bytes;
+    ClientProxy1_0Test proxy("peer", stream, &events);
+    proxy.setPeerMinorVersion(7);
+
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DINF")));
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DDIS")));
+
+    std::vector<ScreenRect> displays;
+    proxy.getDisplays(displays);
+    ASSERT_EQ(2u, displays.size());
+    EXPECT_EQ(0, displays[0].x);
+    EXPECT_EQ(1920, displays[0].w);
+    EXPECT_EQ(1920, displays[1].x);
+    EXPECT_EQ(1080, displays[1].w);
+}
+
 TEST(ClientProxyDisplayNamesTests, ddnmParsedFor17Peer_orderMatchesDisplays)
 {
     TestEventQueue events;

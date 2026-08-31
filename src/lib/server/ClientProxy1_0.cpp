@@ -285,7 +285,20 @@ ClientProxy1_0::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
 void
 ClientProxy1_0::getDisplays(std::vector<ScreenRect>& displays) const
 {
-    displays = m_info.m_displays;
+    if (!m_info.m_displays.empty()) {
+        displays = m_info.m_displays;
+        return;
+    }
+
+    displays.clear();
+    if (m_info.m_w > 0 && m_info.m_h > 0) {
+        ScreenRect rect;
+        rect.x = m_info.m_x;
+        rect.y = m_info.m_y;
+        rect.w = m_info.m_w;
+        rect.h = m_info.m_h;
+        displays.push_back(rect);
+    }
 }
 
 void

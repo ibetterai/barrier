@@ -246,7 +246,10 @@ TEST(DisplayNamesTests, decode_partialOutput_clearedOnLateFailure)
 
 TEST(DisplayNamesTests, capability_negotiation)
 {
-    // protocol 1.7 introduced DDNM
+    // protocol 1.7 introduced DDIS and DDNM
+    EXPECT_FALSE(supportsDisplayGeometry(6));
+    EXPECT_TRUE(supportsDisplayGeometry(7));
+    EXPECT_TRUE(supportsDisplayGeometry(10));
     EXPECT_FALSE(supportsDisplayNames(6));
     EXPECT_TRUE(supportsDisplayNames(7));
     EXPECT_TRUE(supportsDisplayNames(10));

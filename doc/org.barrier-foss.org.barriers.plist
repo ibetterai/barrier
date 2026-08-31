@@ -14,7 +14,7 @@
             <string>--no-daemon</string>
             <string>--config</string>
             <!-- Replace this path with the path to your barrier configuration -->
-            <string>/path/to/example</string>
+            <string>/path/to/barrier.conf</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

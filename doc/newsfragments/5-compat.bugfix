@@ -1,0 +1,1 @@
+Restored interoperability with Barrier 2.4.0 peers by gating 3.x display metadata behind negotiated protocol support. Older peers use rectangular-screen fallback behavior while enhanced display routing remains available between 3.x peers.
