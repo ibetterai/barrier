@@ -29,7 +29,7 @@ jobs:
           cmake -S . -B build-ci \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DBARRIER_MACOS_DEPLOYMENT_TARGET=11.0 \
+            -DBARRIER_MACOS_DEPLOYMENT_TARGET=12.0 \
             -DCMAKE_OSX_SYSROOT=macosx \
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
@@ -56,8 +56,8 @@ jobs:
           plist=build-ci/bundle/Barrier.app/Contents/Info.plist
           test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$bundle_version"
           test "$(plutil -extract CFBundleVersion raw "$plist")" = "$bundle_version"
-          test "$(plutil -extract LSMinimumSystemVersion raw "$plist")" = 11.0
-          vtool -show-build build-ci/bundle/Barrier.app/Contents/MacOS/barrier | grep -Eq 'minos 11\.0'
+          test "$(plutil -extract LSMinimumSystemVersion raw "$plist")" = 12.0
+          vtool -show-build build-ci/bundle/Barrier.app/Contents/MacOS/barrier | grep -Eq 'minos 12\.0'
 
       - name: Run core unit tests
         run: build-ci/bin/unittests

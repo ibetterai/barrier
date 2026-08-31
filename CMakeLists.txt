@@ -17,7 +17,7 @@
 
 cmake_minimum_required (VERSION 3.4)
 
-set (BARRIER_MACOS_DEPLOYMENT_TARGET "11.0" CACHE STRING
+set (BARRIER_MACOS_DEPLOYMENT_TARGET "12.0" CACHE STRING
      "Minimum macOS version supported by Barrier release artifacts")
 
 if (CMAKE_HOST_APPLE)

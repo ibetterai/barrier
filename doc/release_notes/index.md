@@ -39,7 +39,7 @@ Bug fixes
 - Suppressed repeated identical Zeroconf resolution snapshots and duplicate endpoint log lines
   while preserving real service and topology-readiness updates.
 - Fixed Apple Silicon release packaging so Qt and OpenSSL come from checksum-pinned sources built
-  for macOS 11, every bundled Mach-O file is audited before signing, and release checks reject
+  for macOS 12, every bundled Mach-O file is audited before signing, and release checks reject
   local home paths and concrete private IPv4 addresses from tracked text sources and final app bundles.
 
 Barrier `3.3.1` ( `2026-08-29` )
@@ -65,7 +65,7 @@ Compatibility
   retaining the rectangular fallback for older peers.
 
 Barrier `3.2.0` ( `2026-08-29`, draft and superseded )
-=====================================================
+======================================================
 
 Features and fixes
 ------------------

@@ -17,7 +17,7 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
   reconstructed public product history.
 
 Barrier 3.4.0 and later packages from this fork target Apple Silicon and macOS
-11 or later. These packages are Developer ID signed, Apple notarized, and
+12 or later. These packages are Developer ID signed, Apple notarized, and
 stapled for offline Gatekeeper verification.
 
 ## What this fork adds
