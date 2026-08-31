@@ -55,7 +55,7 @@ jobs:
           # shellcheck disable=SC1091
           source dist/macos/release-dependencies.lock
           test "$MACOS_RELEASE_ARCH" = arm64
-          test "$MACOSX_DEPLOYMENT_TARGET" = 11.0
+          test "$MACOSX_DEPLOYMENT_TARGET" = 12.0
           printf 'MACOS_RELEASE_ARCH=%s\n' "$MACOS_RELEASE_ARCH" >> "$GITHUB_ENV"
           printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "$MACOSX_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
 
