@@ -6,6 +6,42 @@ Release notes
 Barrier `3.4.0` ( `2026-08-31` )
 ================================
 
+Why this release matters
+------------------------
+
+**Barrier 3.4.0 makes the pointer follow the physical desk, even when the desk
+changes shape.**
+
+[Apple Universal Control](https://support.apple.com/guide/mac-help/mchl412faecf/mac)
+is designed for nearby Macs and iPads using the same Apple Account. Barrier
+3.4.0 is aimed at changing multi-monitor desks and mixed-platform setups. The
+complete 3.4.0 experience brings together these capabilities:
+
+- **Real L-shaped and partial-edge routing.** Modern fork peers exchange the
+  physical rectangles of their macOS displays, so the pointer crosses the
+  actual shared edge instead of a machine-sized bounding box.
+- **A server Mac that can leave and return.** An opt-in macOS client can wait
+  for its explicitly paired server, then reconnect when that server is nearby,
+  its matching Bonjour service is reachable, and its display topology is ready.
+  Connect and Departure thresholds are configurable for each pairing.
+- **The right layout for the monitors that are connected now.** Save a profile
+  once for each server display combination. After docking, undocking, opening
+  or closing the lid, or changing external monitors, Barrier selects the exact
+  matching profile automatically. An unknown arrangement pauses switching and
+  asks to be saved instead of guessing.
+- **Displays that can sleep when they are not being used.** Barrier wakes a
+  connected macOS client display when the pointer enters. For an offline Mac,
+  it can also request a best-effort Bonjour network wake when **Wake for network
+  access** is enabled, without pretending that Bluetooth alone can wake a Mac.
+- **A path forward without abandoning Legacy Barrier.** Barrier 3.4.0 restores
+  protocol interoperability with Barrier 2.4 and earlier peers, including
+  existing Windows and Linux machines. Legacy peers use rectangular fallback;
+  modern fork peers keep the enhanced geometry.
+
+These are the user-facing capabilities available in 3.4.0, not a claim that
+every item first appeared in this point release. The chronological 3.2, 3.3,
+and 3.4 sections below preserve when each feature or fix was delivered.
+
 Features
 --------
 
