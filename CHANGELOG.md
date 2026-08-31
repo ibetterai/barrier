@@ -34,6 +34,7 @@ snapshots and release documentation; see
   immediately, and suppressed repeated identical service-resolution logs.
 - Added checksum-pinned macOS dependencies, complete Mach-O deployment-target
   checks, and release privacy audits.
+- Woke every caller waiting for event-queue readiness when startup completed.
 
 ## 3.3.1 — 2026-08-29
 
@@ -43,8 +44,8 @@ snapshots and release documentation; see
   adjacent screens retain their intended links.
 - Corrected partial-edge coordinate mapping and prevented the cursor from
   bouncing back to the source screen.
-- Improved how client display rectangles are represented in the freeform
-  layout.
+- Improved freeform display-rectangle handling for portrait displays, multiple
+  displays, and multiple simultaneously connected clients.
 
 ## 3.3.0 — 2026-08-29
 
@@ -68,6 +69,10 @@ Status: draft, superseded by later releases.
 - Improved input in login sessions, perceived scroll direction across hosts,
   and activation of menu-bar windows.
 - Added forwarding for Magic Mouse two-finger Spaces gestures.
+- Fixed cross-platform HTML clipboard encoding, restored Windows display
+  scaling above 100%, and fixed GCC 11.2 builds.
+- Improved incompatible-macOS launch guidance, updated Japanese translations,
+  and refreshed OS-support and Linux drag-and-drop guidance.
 
 ## 2.4.0 — 2021-11-01
 
