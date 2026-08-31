@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 180
     env:
-      AUTOMATION_TAG: v3.4.0-automation.1
+      AUTOMATION_TAG: v3.4.0-automation.2
       RELEASE_PREFIX: /tmp/barrier-release-prefix
       RELEASE_WORK_DIR: /tmp/barrier-release-work
       RELEASE_BUILD_DIR: /tmp/barrier-release-build
