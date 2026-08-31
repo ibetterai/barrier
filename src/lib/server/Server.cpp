@@ -33,6 +33,7 @@
 #include "barrier/KeyState.h"
 #include "barrier/Screen.h"
 #include "barrier/PacketStreamFilter.h"
+#include "barrier/DisplayGeometry.h"
 #include "net/TCPSocket.h"
 #include "net/IDataSocket.h"
 #include "net/IListenSocket.h"
@@ -49,6 +50,187 @@
 #include <fstream>
 #include <ctime>
 #include <stdexcept>
+#include <algorithm>
+
+namespace barrier {
+
+namespace {
+
+// GUI link serialization rounds every interval endpoint to a whole
+// percentage (qRound(f * 100)); a valid interval may therefore overhang
+// this display's exact edge span by up to one encoded step.
+const float kIntervalQuantizationTolerance = 0.01f;
+
+// Union-relative fraction of a point along the axis perpendicular to
+// \p direction, mirroring Server::mapToFraction() against the union
+// bounding box.  Configured link intervals are encoded against this
+// same union frame, so the cursor fraction must be computed here.
+float edgeFraction(EDirection direction, const ScreenRect& unionRect,
+                   SInt32 cursorX, SInt32 cursorY)
+{
+	switch (direction) {
+	case kLeft:
+	case kRight:
+		if (unionRect.h <= 0) {
+			return 0.0f;
+		}
+		return static_cast<float>(cursorY - unionRect.y + 0.5f) /
+		       static_cast<float>(unionRect.h);
+	case kTop:
+	case kBottom:
+		if (unionRect.w <= 0) {
+			return 0.0f;
+		}
+		return static_cast<float>(cursorX - unionRect.x + 0.5f) /
+		       static_cast<float>(unionRect.w);
+	default:
+		return 0.0f;
+	}
+}
+
+// Fraction span of \p display's own edge along the axis perpendicular
+// to \p direction.  Only a link whose interval lies within this span
+// can belong to this display's edge; intervals of other displays in the
+// union must never be reached from here.
+void displayEdgeSpan(const ScreenRect& display, EDirection direction,
+                     const ScreenRect& unionRect, float& start, float& end)
+{
+	switch (direction) {
+	case kLeft:
+	case kRight:
+		if (unionRect.h <= 0) {
+			start = 0.0f;
+			end = 0.0f;
+			return;
+		}
+		start = static_cast<float>(display.y - unionRect.y) /
+		        static_cast<float>(unionRect.h);
+		end = static_cast<float>(display.y + display.h - unionRect.y) /
+		      static_cast<float>(unionRect.h);
+		break;
+	case kTop:
+	case kBottom:
+		if (unionRect.w <= 0) {
+			start = 0.0f;
+			end = 0.0f;
+			return;
+		}
+		start = static_cast<float>(display.x - unionRect.x) /
+		        static_cast<float>(unionRect.w);
+		end = static_cast<float>(display.x + display.w - unionRect.x) /
+		      static_cast<float>(unionRect.w);
+		break;
+	default:
+		start = 0.0f;
+		end = 0.0f;
+		break;
+	}
+}
+
+// True when another display of the same screen abuts \p display's
+// \p direction edge at the cursor's coordinate along that edge.
+bool sameHostAbuts(const ScreenRect& display, EDirection direction,
+                   const std::vector<ScreenRect>& displays,
+                   SInt32 cursorX, SInt32 cursorY)
+{
+	for (std::vector<ScreenRect>::const_iterator it = displays.begin();
+			it != displays.end(); ++it) {
+		const ScreenRect& other = *it;
+		if (other.x == display.x && other.y == display.y &&
+				other.w == display.w && other.h == display.h) {
+			// the display itself
+			continue;
+		}
+		SInt32 edge, otherEdge, spanStart, spanEnd;
+		switch (direction) {
+		case kLeft:
+			edge = display.x;
+			otherEdge = other.x + other.w;
+			spanStart = std::max(display.y, other.y);
+			spanEnd = std::min(display.y + display.h, other.y + other.h);
+			break;
+		case kRight:
+			edge = display.x + display.w;
+			otherEdge = other.x;
+			spanStart = std::max(display.y, other.y);
+			spanEnd = std::min(display.y + display.h, other.y + other.h);
+			break;
+		case kTop:
+			edge = display.y;
+			otherEdge = other.y + other.h;
+			spanStart = std::max(display.x, other.x);
+			spanEnd = std::min(display.x + display.w, other.x + other.w);
+			break;
+		case kBottom:
+			edge = display.y + display.h;
+			otherEdge = other.y;
+			spanStart = std::max(display.x, other.x);
+			spanEnd = std::min(display.x + display.w, other.x + other.w);
+			break;
+		default:
+			continue;
+		}
+		if (edge != otherEdge) {
+			continue;
+		}
+		const SInt32 cursorAlong = (direction == kLeft || direction == kRight)
+		                               ? cursorY : cursorX;
+		if (spanEnd > spanStart && cursorAlong >= spanStart &&
+				cursorAlong < spanEnd) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+BoundaryOwner
+classifyDisplayBoundary(const ScreenRect& sourceDisplay, EDirection direction,
+                        const std::vector<ScreenRect>& activeDisplays,
+                        const std::vector<Config::Interval>& edgeLinkIntervals,
+                        SInt32 cursorX, SInt32 cursorY)
+{
+	if (direction == kNoDirection || activeDisplays.empty()) {
+		return BoundaryOwner::Clamp;
+	}
+
+	// A boundary shared with another display of the same screen is owned
+	// by the local OS: the cursor moves natively, so Barrier must neither
+	// switch nor clamp.
+	if (sameHostAbuts(sourceDisplay, direction, activeDisplays,
+			cursorX, cursorY)) {
+		return BoundaryOwner::LocalOS;
+	}
+
+	// External edge.  Only a configured cross-host link covering this
+	// physical edge coordinate makes the edge Remote.  Links are encoded
+	// against the display union, so the cursor fraction is computed in
+	// that same union frame, and a link only counts when its interval
+	// lies within this display's own edge span -- an interval belonging
+	// to another display of the union must not be reached from here.
+	const ScreenRect unionRect = unionBounds(activeDisplays);
+	const float fraction = edgeFraction(direction, unionRect,
+	                                    cursorX, cursorY);
+	float spanStart, spanEnd;
+	displayEdgeSpan(sourceDisplay, direction, unionRect, spanStart, spanEnd);
+	for (std::vector<Config::Interval>::const_iterator it =
+			edgeLinkIntervals.begin(); it != edgeLinkIntervals.end(); ++it) {
+		// The interval must belong to this display's edge: its endpoints
+		// lie within the display's span, tolerating one encoded percent
+		// step of GUI rounding so a valid link is not rejected (e.g. an
+		// exact 1440/2160 = 0.6667 endpoint serializes as 0.67).
+		if (it->first >= spanStart - kIntervalQuantizationTolerance &&
+				it->second <= spanEnd + kIntervalQuantizationTolerance &&
+				fraction >= it->first && fraction < it->second) {
+			return BoundaryOwner::Remote;
+		}
+	}
+	return BoundaryOwner::Clamp;
+}
+
+} // namespace barrier
+
 //
 // Server
 //
@@ -461,7 +643,26 @@ Server::switchScreen(BaseClientProxy* dst,
 #endif
 	assert(m_active != NULL);
 
-	LOG((CLOG_INFO "switch from \"%s\" to \"%s\" at %d,%d", getName(m_active).c_str(), getName(dst).c_str(), x, y));
+	// resolve the physical displays selected by routing for the log: the
+	// display under the cursor on the source screen (m_x, m_y still hold
+	// the source position) and the display containing the landing point
+	// on the destination screen.  unknown displays append no label, so
+	// the existing log text stays byte-identical.
+	std::vector<ScreenRect> srcDisplays, dstDisplays;
+	std::vector<std::string> srcNames, dstNames;
+	m_active->getDisplays(srcDisplays);
+	m_active->getDisplayNames(srcNames);
+	dst->getDisplays(dstDisplays);
+	dst->getDisplayNames(dstNames);
+
+	LOG((CLOG_INFO "switch from \"%s\"%s to \"%s\"%s at %d,%d",
+	     getName(m_active).c_str(),
+	     barrier::displayLabelSuffix(
+	         barrier::displayLabelAt(srcDisplays, srcNames, m_x, m_y)).c_str(),
+	     getName(dst).c_str(),
+	     barrier::displayLabelSuffix(
+	         barrier::displayLabelAt(dstDisplays, dstNames, x, y)).c_str(),
+	     x, y));
 
 	// stop waiting to switch
 	stopSwitch();
@@ -679,6 +880,24 @@ Server::mapToNeighbor(BaseClientProxy* src,
 		}
 		assert(lastGoodScreen != NULL);
 		x += dx;
+		// L-shaped destination: the left/right edge x depends on y.
+		{
+			std::vector<ScreenRect> rects;
+			lastGoodScreen->getDisplays(rects);
+			if (rects.size() > 1) {
+				for (std::vector<ScreenRect>::const_iterator i = rects.begin();
+						i != rects.end(); ++i) {
+					if (y >= i->y && y < i->y + i->h) {
+						if (srcSide == kLeft) {
+							x = i->x + i->w - 1;
+						} else {
+							x = i->x;
+						}
+						break;
+					}
+				}
+			}
+		}
 		break;
 
 	case kRight:
@@ -695,6 +914,23 @@ Server::mapToNeighbor(BaseClientProxy* src,
 		}
 		assert(lastGoodScreen != NULL);
 		x += dx;
+		{
+			std::vector<ScreenRect> rects;
+			lastGoodScreen->getDisplays(rects);
+			if (rects.size() > 1) {
+				for (std::vector<ScreenRect>::const_iterator i = rects.begin();
+						i != rects.end(); ++i) {
+					if (y >= i->y && y < i->y + i->h) {
+						if (srcSide == kLeft) {
+							x = i->x + i->w - 1;
+						} else {
+							x = i->x;
+						}
+						break;
+					}
+				}
+			}
+		}
 		break;
 
 	case kTop:
@@ -711,6 +947,22 @@ Server::mapToNeighbor(BaseClientProxy* src,
 		}
 		assert(lastGoodScreen != NULL);
 		y += dy;
+		// for an L-shaped screen, the top edge is not a single straight
+		// line.  adjust y to the top of the display that actually contains x
+		// so the cursor lands on the correct monitor instead of the gap.
+		{
+			std::vector<ScreenRect> rects;
+			lastGoodScreen->getDisplays(rects);
+			if (rects.size() > 1) {
+				for (std::vector<ScreenRect>::const_iterator i = rects.begin();
+						i != rects.end(); ++i) {
+					if (x >= i->x && x < i->x + i->w) {
+						y = i->y;
+						break;
+					}
+				}
+			}
+		}
 		break;
 
 	case kBottom:
@@ -727,7 +979,23 @@ Server::mapToNeighbor(BaseClientProxy* src,
 		}
 		assert(lastGoodScreen != NULL);
 		y += dy;
+		// for an L-shaped screen, the top edge is stepped.  when entering
+		// from above, land on the display whose horizontal span contains x.
+		{
+			std::vector<ScreenRect> rects;
+			lastGoodScreen->getDisplays(rects);
+			if (rects.size() > 1) {
+				for (std::vector<ScreenRect>::const_iterator i = rects.begin();
+						i != rects.end(); ++i) {
+					if (x >= i->x && x < i->x + i->w) {
+						y = i->y;
+						break;
+					}
+				}
+			}
+		}
 		break;
+
 
 	case kNoDirection:
 		assert(0 && "bad direction");
@@ -1756,9 +2024,11 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 	m_x       = x;
 	m_y       = y;
 
-	// get screen shape
+	// get screen shape and per-display rectangles
 	SInt32 ax, ay, aw, ah;
 	m_active->getShape(ax, ay, aw, ah);
+	std::vector<ScreenRect> displays;
+	m_active->getDisplays(displays);
 	SInt32 zoneSize = getJumpZoneSize(m_active);
 
 	// clamp position to screen
@@ -1776,27 +2046,60 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 		yc = ay + ah - 1;
 	}
 
+	// find the display the cursor is on so an L-shaped (non-rectangular)
+	// layout switches on the real monitor edge rather than the bounding box.
+	const ScreenRect* disp = NULL;
+	for (std::vector<ScreenRect>::const_iterator i = displays.begin();
+			i != displays.end(); ++i) {
+		if (x >= i->x && x < i->x + i->w && y >= i->y && y < i->y + i->h) {
+			disp = &(*i);
+			break;
+		}
+	}
+	SInt32 sx = (disp != NULL) ? disp->x : ax;
+	SInt32 sy = (disp != NULL) ? disp->y : ay;
+	SInt32 sw = (disp != NULL) ? disp->w : aw;
+	SInt32 sh = (disp != NULL) ? disp->h : ah;
+
 	// see if we should change screens
 	// when the cursor is in a corner, there may be a screen either
 	// horizontally or vertically.  check both directions.
 	EDirection dirh = kNoDirection, dirv = kNoDirection;
 	SInt32 xh = x, yv = y;
-	if (x < ax + zoneSize) {
-		xh  -= zoneSize;
+	// mapToNeighbor() canonicalizes by subtracting THIS screen's own
+	// reported origin (ax,ay -- the union bounding box's corner), so the
+	// offset we hand it must be expressed relative to ax,ay too. For a
+	// simple (non-L-shaped) screen sx==ax and sy==ay, so this reduces to
+	// the plain x/y +/- zoneSize as before. For an L-shaped screen, the
+	// display actually crossed (sx,sy,sw,sh) is often NOT at the union's
+	// own corner (e.g. a portrait display offset from the union's origin)
+	// -- using x/y directly there lands the cursor far outside the
+	// destination screen, which immediately triggers a bounce back.
+	if (x < sx + zoneSize) {
+		xh  = ax + (x - sx) - zoneSize;
 		dirh = kLeft;
 	}
-	else if (x >= ax + aw - zoneSize) {
-		xh  += zoneSize;
+	else if (x >= sx + sw - zoneSize) {
+		xh  = ax + (x - (sx + sw)) + zoneSize;
 		dirh = kRight;
 	}
-	if (y < ay + zoneSize) {
-		yv  -= zoneSize;
+	if (y < sy + zoneSize) {
+		yv  = ay + (y - sy) - zoneSize;
 		dirv = kTop;
 	}
-	else if (y >= ay + ah - zoneSize) {
-		yv  += zoneSize;
+	else if (y >= sy + sh - zoneSize) {
+		yv  = ay + (y - (sy + sh)) + zoneSize;
 		dirv = kBottom;
 	}
+
+	// The fraction coordinates (y for a horizontal crossing, x for a
+	// vertical one) deliberately stay in the screen union frame: the
+	// configured link intervals are encoded against that same union, so
+	// remapping them relative to the crossed display would make partial
+	// edges (e.g. LG's top edge, which spans only 1920/3000 of the
+	// union) unreachable beyond their per-display fraction.  The xh/yv
+	// offsets above already canonicalize the landing position relative
+	// to the display actually crossed.
 	if (dirh == kNoDirection && dirv == kNoDirection) {
 		// still on local screen
 		noSwitch(x, y);
@@ -1812,6 +2115,60 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 			continue;
 		}
 		x = xs[i], y = ys[i];
+
+		// Decide who owns this physical edge before any neighbor lookup:
+		// a boundary shared with another display of the same screen is
+		// LocalOS (the OS moves the cursor natively), an external edge
+		// without a configured cross-host link at this coordinate clamps
+		// at the display's own edge, and only a linked external edge
+		// reaches mapToNeighbor().  A non-Remote direction is skipped so
+		// a corner can still switch through its other direction.
+		if (disp != NULL) {
+			std::vector<Config::Interval> intervals;
+			const std::string activeName(getName(m_active));
+			for (Config::link_const_iterator it = m_config->beginNeighbor(activeName);
+					it != m_config->endNeighbor(activeName); ++it) {
+				if (it->first.getSide() == dir) {
+					intervals.push_back(it->first.getInterval());
+				}
+			}
+			switch (barrier::classifyDisplayBoundary(
+						*disp, dir, displays, intervals, m_x, m_y)) {
+			case barrier::BoundaryOwner::LocalOS:
+				LOG((CLOG_DEBUG1 "same-host boundary on %s of \"%s\" left to the OS",
+					Config::dirName(dir), activeName.c_str()));
+				// Clear any pending switch: a wait armed at a previously
+				// linked edge must not fire while the OS moves the cursor
+				// across this same-host boundary.
+				stopSwitch();
+				continue;
+			case barrier::BoundaryOwner::Clamp: {
+				LOG((CLOG_DEBUG1 "unlinked edge on %s of \"%s\" clamps",
+					Config::dirName(dir), activeName.c_str()));
+				SInt32 clampX = m_x, clampY = m_y;
+				switch (dir) {
+				case kLeft:
+					clampX = disp->x;
+					break;
+				case kRight:
+					clampX = disp->x + disp->w - 1;
+					break;
+				case kTop:
+					clampY = disp->y;
+					break;
+				case kBottom:
+					clampY = disp->y + disp->h - 1;
+					break;
+				default:
+					break;
+				}
+				noSwitch(clampX, clampY);
+				continue;
+			}
+			case barrier::BoundaryOwner::Remote:
+				break;
+			}
+		}
 
 		// get jump destination
 		BaseClientProxy* newScreen = mapToNeighbor(m_active, dir, x, y);

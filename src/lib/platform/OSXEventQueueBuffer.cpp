@@ -20,6 +20,8 @@
 
 #include "base/Event.h"
 #include "base/IEventQueue.h"
+#include "base/Log.h"
+
 
 //
 // EventQueueTimer
@@ -50,7 +52,15 @@ OSXEventQueueBuffer::~OSXEventQueueBuffer()
 void
 OSXEventQueueBuffer::init()
 {
-    m_carbonEventQueue = GetCurrentEventQueue();
+    // addEvent() is called from background threads (socket multiplexer and
+    // CGEventTap callback).  Carbon event queues are thread-local, so a queue
+    // returned by GetCurrentEventQueue() becomes stale/invalid when passed
+    // across those threads.  The Carbon contract explicitly makes
+    // GetMainEventQueue() thread-safe and allows PostEventToQueue() from any
+    // thread to wake the main event loop.  Always target that stable queue.
+    m_carbonEventQueue = GetMainEventQueue();
+    LOG((CLOG_NOTE "barrier-eq-main: captured main event queue %p",
+         (void*)m_carbonEventQueue));
 }
 
 void
@@ -63,6 +73,7 @@ OSXEventQueueBuffer::waitForEvent(double timeout)
 IEventQueueBuffer::Type
 OSXEventQueueBuffer::getEvent(Event& event, UInt32& dataID)
 {
+
     // release the previous event
     if (m_event != NULL) {
         ReleaseEvent(m_event);
@@ -108,13 +119,26 @@ OSXEventQueueBuffer::addEvent(UInt32 dataID)
                             &event);
 
     if (error == noErr) {
+        // init() captures the Carbon event queue on the thread that drains
+        // it, but addEvent() is also called from other threads (the socket
+        // multiplexer and the CGEventTap callback).  If init() has not run
+        // for this buffer yet, m_carbonEventQueue is still NULL and
+        // PostEventToQueue(NULL, ...) dereferences it, killing the daemon
+        // with SIGSEGV.  Dropping one event is recoverable; a crash loop is
+        // not, so bail out instead.
+        EventQueueRef queue = m_carbonEventQueue;
+        if (queue == NULL) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                LOG((CLOG_WARN "barrier-eventqueue-guard: carbon event queue "
+                     "not initialized; dropping event %d", (int)dataID));
+            }
+            ReleaseEvent(event);
+            return false;
+        }
 
-        assert(m_carbonEventQueue != NULL);
-
-        error = PostEventToQueue(
-            m_carbonEventQueue,
-            event,
-            kEventPriorityStandard);
+        error = PostEventToQueue(queue, event, kEventPriorityStandard);
 
         ReleaseEvent(event);
     }

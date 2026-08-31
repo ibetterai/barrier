@@ -392,6 +392,7 @@ ClientApp::startClient()
     try {
         if (m_clientScreen == NULL) {
             clientScreen = openClientScreen();
+            clientScreen->setScreenName(args().m_name);
             m_client     = openClient(args().m_name,
                 *m_serverAddress, clientScreen);
             m_clientScreen  = clientScreen;

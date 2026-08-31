@@ -17,6 +17,17 @@
 file(GLOB headers "*.h")
 file(GLOB sources "*.cpp")
 
+# New sources are registered explicitly so a stale configure-time glob
+# cache cannot silently drop them; the guard keeps the entry single.
+if (NOT "DisplayGeometry.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/DisplayGeometry.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/DisplayGeometry.cpp")
+endif()
+if (NOT "DisplayNames.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/DisplayNames.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/DisplayNames.cpp")
+endif()
+
 # arch
 if (WIN32)
     file(GLOB arch_headers "win32/*.h")

@@ -1,0 +1,1 @@
+Fixed a regression in 2.4.0 that caused Barrier to not support scaling other than 100% (https://github.com/debauchee/barrier/issues/1462).

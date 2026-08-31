@@ -137,7 +137,9 @@ ServerApp::help()
                             barrier::fs::u8path(SYS_CONFIG_NAME)).u8string();
 
     std::ostringstream buffer;
-    buffer << "Start the barrier server component.\n"
+    buffer << "Start the barrier server component. The server shares the keyboard &\n"
+           << "mouse of the local machine with the connected clients based on the\n"
+           << "configuration file.\n"
            << "\n"
            << "Usage: " << args().m_exename
            << " [--address <address>]"
@@ -460,6 +462,7 @@ bool ServerApp::initServer()
     try {
         String name    = args().m_config->getCanonicalName(args().m_name);
         serverScreen    = openServerScreen();
+        serverScreen->setScreenName(name);
         primaryClient   = openPrimaryClient(name, serverScreen);
         m_serverScreen  = serverScreen;
         m_primaryClient = primaryClient;

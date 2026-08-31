@@ -26,8 +26,9 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install /tmp/gitleaks /usr/local/bin/gitleaks
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - name: Test protected-metadata audit
+      - name: Test public-audit controls
         run: |
+          bash scripts/tests/gitleaks-config_test.sh
           bash scripts/tests/scan-protected-metadata_test.sh
           bash scripts/tests/public-audit_test.sh
       - run: bash scripts/public-audit.sh

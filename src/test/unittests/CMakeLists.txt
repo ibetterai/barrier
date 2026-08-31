@@ -17,6 +17,26 @@
 file(GLOB_RECURSE headers "*.h")
 file(GLOB_RECURSE sources "*.cpp")
 
+# New tests are registered explicitly so a stale configure-time glob
+# cache cannot silently drop them; the guard keeps the entry single.
+if (NOT "barrier/DisplayGeometryTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayGeometryTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayGeometryTests.cpp")
+endif()
+if (NOT "barrier/DisplayNamesTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayNamesTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/barrier/DisplayNamesTests.cpp")
+endif()
+if (NOT "barrier/ClientProxyDisplayNamesTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/barrier/ClientProxyDisplayNamesTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/barrier/ClientProxyDisplayNamesTests.cpp")
+endif()
+
+if (NOT "platform/OSXScreenTests.cpp" IN_LIST sources AND
+    NOT "${CMAKE_CURRENT_SOURCE_DIR}/platform/OSXScreenTests.cpp" IN_LIST sources)
+    list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/platform/OSXScreenTests.cpp")
+endif()
+
 file(GLOB_RECURSE remove_platform "platform/*")
 list(REMOVE_ITEM headers ${remove_platform})
 list(REMOVE_ITEM sources ${remove_platform})
@@ -45,8 +65,11 @@ elseif (UNIX)
     file(GLOB platform_headers "platform/XWindows*.h")
 endif()
 
-list(APPEND sources ${platform_headers})
-list(APPEND headers ${platform_sources})
+# platform test sources must compile under every generator; the
+# BARRIER_ADD_HEADERS path alone drops them for Unix Makefiles, which
+# would silently skip all OSX/MSWindows/XWindows unit tests
+list(APPEND sources ${platform_sources})
+list(APPEND headers ${platform_headers})
 
 include_directories(
     ../../

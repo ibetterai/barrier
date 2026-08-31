@@ -165,6 +165,7 @@ public slots:
         void promptAutoConfig();
         void checkConnected(const QString& line);
         void checkFingerprint(const QString& line);
+        void checkClientDisplayNames(const QString& line);
         void restartBarrier();
         void proofreadInfo();
         void windowStateChanged();

@@ -235,9 +235,20 @@ ClientProxyUnknown::handleData(const Event&, void*)
                 break;
 
             case 6:
+            case 7:
+                // protocol 1.7 adds only a client->server message (DDNM,
+                // display names); the 1.6 proxy, which inherits the base
+                // parser that understands it, also serves 1.7 clients.
                 m_proxy = new ClientProxy1_6(name, m_stream, m_server, m_events);
                 break;
             }
+        }
+
+        // remember the peer's negotiated minor version explicitly so
+        // capability-gated behavior can be decided later.  in particular
+        // a 1.6 client keeps geometry-only behavior with a 1.7 server.
+        if (m_proxy != NULL) {
+            m_proxy->setPeerMinorVersion(minor);
         }
 
         // hangup (with error) if version isn't supported

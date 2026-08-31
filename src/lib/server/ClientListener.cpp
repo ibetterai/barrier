@@ -201,9 +201,10 @@ ClientListener::handleUnknownClient(const Event&, void* vclient)
         }
     }
 
-    // now finished with unknown client
-    m_events->removeHandler(m_events->forClientProxyUnknown().success(), client);
-    m_events->removeHandler(m_events->forClientProxyUnknown().failure(), client);
+    // now finished with unknown client.  the handlers were registered on
+    // unknownClient, not on the orphaned real proxy, so remove them there.
+    m_events->removeHandler(m_events->forClientProxyUnknown().success(), unknownClient);
+    m_events->removeHandler(m_events->forClientProxyUnknown().failure(), unknownClient);
     m_newClients.erase(unknownClient);
 
     delete unknownClient;

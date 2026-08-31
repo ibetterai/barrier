@@ -188,6 +188,26 @@ public:
     */
     bool addScreen(const std::string& name);
 
+    //! Set per-screen display rectangles
+    void setDisplayRects(const std::string& name,
+                         const std::vector<ScreenRect>& rects);
+    bool getDisplayRects(const std::string& name,
+                         std::vector<ScreenRect>& rects) const;
+
+    //! Set/get freeform screen position (global layout).  When set, the
+    // screen's displays are at position + rect offset.
+    void setScreenPosition(const std::string& name, SInt32 x, SInt32 y);
+    bool getScreenPosition(const std::string& name, SInt32& x, SInt32& y) const;
+
+    //! Generate links from freeform geometry
+    /*!
+    Clears existing links and regenerates them from the current
+    per-screen display rectangles and freeform positions.  Screens
+    without an explicit position keep their grid placement; screens
+    without display rects fall back to their bounding box.
+    */
+    void generateFreeformLinks();
+
     //! Rename screen
     /*!
     Renames a screen.  All references to the name are updated.
@@ -464,6 +484,15 @@ private:
     InputFilter            m_inputFilter;
     bool                m_hasLockToScreenAction;
     IEventQueue*        m_events;
+    // Per-screen display rectangles, in screen-local coordinates (main display
+    // at 0,0).  Empty means single bounding-box display.
+    std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>
+                            m_displayRects;
+    // Freeform screen positions in the global Barrier layout.  Empty means
+    // grid layout (numColumns/numRows).  When present, the display rects
+    // above are offset by this position for adjacency testing.
+    std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>
+                            m_screenPositions;
 };
 
 //! Configuration read context

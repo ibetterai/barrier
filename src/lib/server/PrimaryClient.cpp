@@ -120,6 +120,18 @@ PrimaryClient::getShape(SInt32& x, SInt32& y,
 }
 
 void
+PrimaryClient::getDisplays(std::vector<ScreenRect>& displays) const
+{
+    m_screen->getDisplays(displays);
+}
+
+void
+PrimaryClient::getDisplayNames(std::vector<std::string>& names) const
+{
+    m_screen->getDisplayNames(names);
+}
+
+void
 PrimaryClient::getCursorPos(SInt32& x, SInt32& y) const
 {
     m_screen->getCursorPos(x, y);

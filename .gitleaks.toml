@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+# Historical false positives are allowlisted only by their exact fingerprints
+# in .gitleaksignore. Path-level exclusions are intentionally forbidden so a
+# new finding in an inherited source path still fails the public audit.

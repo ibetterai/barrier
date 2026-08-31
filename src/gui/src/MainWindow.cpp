@@ -35,6 +35,7 @@
 #include "common/DataDirectories.h"
 #include "net/FingerprintDatabase.h"
 #include "net/SecureUtils.h"
+#include "TrayIconActivation.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -46,8 +47,11 @@
 #include <QFileDialog>
 #include <QDesktopServices>
 #include <QDesktopWidget>
+#include <QApplication>
+#include <QWindow>
 
 #if defined(Q_OS_MAC)
+#include "MacWindowActivation.h"
 #include <ApplicationServices/ApplicationServices.h>
 #endif
 
@@ -70,6 +74,32 @@ static const QString barrierConfigFilter(QObject::tr("Barrier Configurations (*.
 #endif
 static const QString barrierConfigOpenFilter(barrierConfigFilter + ";;" + allFilesFilter);
 static const QString barrierConfigSaveFilter(barrierConfigFilter);
+
+namespace {
+
+void showAndActivate(QWidget* window)
+{
+    window->showNormal();
+#if defined(Q_OS_MAC)
+    // Qt can show a parentless QDialog without activating the application.
+    // Restore foreground eligibility before issuing the Qt focus requests.
+    activateCurrentApplication();
+#endif
+    window->raise();
+    window->activateWindow();
+    QApplication::setActiveWindow(window);
+    if (window->windowHandle() != NULL) {
+        window->windowHandle()->requestActivate();
+    }
+#if defined(Q_OS_MAC)
+    // Make the requested native window authoritative after Qt has finished
+    // creating and activating it. Otherwise a later Qt focus request can
+    // leave the parentless Log dialog behind the main window or another app.
+    bringWindowToFront(window);
+#endif
+}
+
+}
 
 static const char* barrierIconFiles[] =
 {
@@ -144,15 +174,6 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     m_IpcClient.connectToHost();
 #endif
 
-    // change default size based on os
-#if defined(Q_OS_MAC)
-    resize(720, 550);
-    setMinimumSize(720, 0);
-#elif defined(Q_OS_LINUX)
-    resize(700, 530);
-    setMinimumSize(700, 0);
-#endif
-
     m_SuppressAutoConfigWarning = true;
     m_pCheckBoxAutoConfig->setChecked(appConfig.autoConfig());
     m_SuppressAutoConfigWarning = false;
@@ -175,8 +196,6 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
         }
     });
 
-    // resize window to smallest reasonable size
-    resize(0, 0);
 }
 
 MainWindow::~MainWindow()
@@ -300,7 +319,9 @@ void MainWindow::loadSettings()
 void MainWindow::initConnections()
 {
     connect(m_pActionMinimize, SIGNAL(triggered()), this, SLOT(hide()));
-    connect(m_pActionRestore, SIGNAL(triggered()), this, SLOT(showNormal()));
+    connect(m_pActionRestore, &QAction::triggered, this, [this]() {
+        showAndActivate(this);
+    });
     connect(m_pActionStartBarrier, SIGNAL(triggered()), this, SLOT(startBarrier()));
     connect(m_pActionStopBarrier, SIGNAL(triggered()), this, SLOT(stopBarrier()));
     connect(m_pActionShowLog, SIGNAL(triggered()), this, SLOT(showLogWindow()));
@@ -333,17 +354,20 @@ void MainWindow::setIcon(qBarrierState state)
 
 void MainWindow::trayActivated(QSystemTrayIcon::ActivationReason reason)
 {
-    if (reason == QSystemTrayIcon::DoubleClick)
+    if (!trayActivationTogglesWindow(reason, currentTrayIconSurface()))
     {
-        if (isVisible())
-        {
-            hide();
-        }
-        else
-        {
-            showNormal();
-            activateWindow();
-        }
+        // macOS status-item clicks belong to the menu. Context, MiddleClick
+        // and Unknown keep their existing behavior on other platforms.
+        return;
+    }
+
+    if (isVisible())
+    {
+        hide();
+    }
+    else
+    {
+        showAndActivate(this);
     }
 }
 
@@ -402,6 +426,35 @@ void MainWindow::updateFromLogLine(const QString &line)
     // TODO: this code makes Andrew cry
     checkConnected(line);
     checkFingerprint(line);
+    checkClientDisplayNames(line);
+}
+
+void MainWindow::checkClientDisplayNames(const QString& line)
+{
+    // The daemon is the only process with the live ClientProxy; log lines
+    // are the established daemon -> GUI metadata channel (see
+    // checkFingerprint()). Parses the line emitted by
+    // ClientProxy1_0::recvDisplayNames() when DDNM metadata arrives:
+    //   client "client-mac" display names: ["LG", "", "VG"]
+    // The ordered names (empty entries allowed) are stored per client
+    // screen so ServerConfigDialog can label the canvas displays.
+    QRegExp namesRegex(".*client \"([^\"]+)\" display names: \\[(.*)\\]");
+    if (!namesRegex.exactMatch(line)) {
+        return;
+    }
+    const QString clientName = namesRegex.cap(1);
+    QStringList names;
+    const QString content = namesRegex.cap(2);
+    if (!content.isEmpty()) {
+        for (const QString& part : content.split(QStringLiteral("\", \""))) {
+            QString name = part;
+            if (name.startsWith(QLatin1Char('"')) && name.endsWith(QLatin1Char('"'))) {
+                name = name.mid(1, name.size() - 2);
+            }
+            names.append(name);
+        }
+    }
+    serverConfig().setFreeformDisplayNames(clientName, names);
 }
 
 void MainWindow::checkConnected(const QString& line)
@@ -833,13 +886,9 @@ void MainWindow::setBarrierState(qBarrierState state)
         m_pButtonReload->setEnabled(false);
     }
 
-    bool connected = false;
-    if (state == barrierConnected || state == barrierTransfering) {
-        connected = true;
-    }
-
-    m_pActionStartBarrier->setEnabled(!connected);
-    m_pActionStopBarrier->setEnabled(connected);
+    const bool running = state != barrierDisconnected;
+    m_pActionStartBarrier->setEnabled(!running);
+    m_pActionStopBarrier->setEnabled(running);
 
     switch (state)
     {
@@ -1368,5 +1417,5 @@ void MainWindow::windowStateChanged()
 
 void MainWindow::showLogWindow()
 {
-    m_pLogWindow->show();
+    showAndActivate(m_pLogWindow);
 }

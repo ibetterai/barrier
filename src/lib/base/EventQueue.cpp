@@ -197,6 +197,7 @@ EventQueue::adoptBuffer(IEventQueueBuffer* buffer)
     if (m_buffer == NULL) {
         m_buffer = new SimpleEventQueueBuffer;
     }
+
 }
 
 bool

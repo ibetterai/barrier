@@ -1,6 +1,5 @@
 name: Bug Report
 description: File a bug report (for questions, ideas & support, use the Discussions tab, or IRC for quick answers, but make sure to stay on the channel!)
-labels: [bug, triage]
 body:
   - type: markdown
     attributes:
@@ -30,6 +29,11 @@ body:
         - v2.3.2-alpha
         - v2.3.2
         - v2.3.3
+        - v2.3.4
+        - v2.4.0
+        - v3.0.0
+        - v3.1.0
+        - v3.1.1
         - From Git HEAD or commit (specify below)
     validations:
       required: true

@@ -64,6 +64,50 @@ Config::addScreen(const std::string& name)
 	return true;
 }
 
+void Config::setDisplayRects(const std::string& name,
+                             const std::vector<ScreenRect>& rects)
+{
+    std::string cname = getCanonicalName(name);
+    if (cname.empty()) {
+        return;
+    }
+    m_displayRects[cname] = rects;
+}
+
+bool Config::getDisplayRects(const std::string& name,
+                             std::vector<ScreenRect>& rects) const
+{
+    std::string cname = getCanonicalName(name);
+    std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::const_iterator i =
+        m_displayRects.find(cname);
+    if (i == m_displayRects.end()) {
+        return false;
+    }
+    rects = i->second;
+    return true;
+}
+
+void Config::setScreenPosition(const std::string& name, SInt32 x, SInt32 y)
+{
+    std::string cname = getCanonicalName(name);
+    if (cname.empty()) {
+        return;
+    }
+    m_screenPositions[cname] = std::make_pair(x, y);
+}
+
+bool Config::getScreenPosition(const std::string& name, SInt32& x, SInt32& y) const
+{
+    std::string cname = getCanonicalName(name);
+    std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::const_iterator i =
+        m_screenPositions.find(cname);
+    if (i == m_screenPositions.end()) {
+        return false;
+    }
+    x = i->second.first;
+    y = i->second.second;
+    return true;
+}
 bool Config::renameScreen(const std::string& oldName, const std::string& newName)
 {
 	// get canonical name and find cell
@@ -106,6 +150,24 @@ bool Config::renameScreen(const std::string& oldName, const std::string& newName
 		}
 	}
 
+	// update display rects and positions
+	{
+		std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::iterator iter =
+			m_displayRects.find(oldCanonical);
+		if (iter != m_displayRects.end()) {
+			std::vector<ScreenRect> rects = iter->second;
+			m_displayRects.erase(iter);
+			m_displayRects[newName] = rects;
+		}
+		std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::iterator posIter =
+			m_screenPositions.find(oldCanonical);
+		if (posIter != m_screenPositions.end()) {
+			std::pair<SInt32, SInt32> pos = posIter->second;
+			m_screenPositions.erase(posIter);
+			m_screenPositions[newName] = pos;
+		}
+	}
+
 	return true;
 }
 
@@ -131,10 +193,124 @@ void Config::removeScreen(const std::string& name)
 	for (NameMap::iterator iter = m_nameToCanonicalName.begin();
 								iter != m_nameToCanonicalName.end(); ) {
 		if (iter->second == canonical) {
-			m_nameToCanonicalName.erase(iter++);
+			NameMap::iterator tmp = iter++;
+			m_nameToCanonicalName.erase(tmp);
 		}
 		else {
-			++index;
+			++iter;
+		}
+	}
+
+	m_displayRects.erase(canonical);
+	m_screenPositions.erase(canonical);
+}
+
+void Config::generateFreeformLinks()
+{
+	// Clear existing links; they will be regenerated from geometry.
+	for (CellMap::iterator i = m_map.begin(); i != m_map.end(); ++i) {
+		i->second = Cell();
+	}
+
+	// Build a map from screen name to its global display rects.
+	// Global rect = screen position + display rect (screen-local, main at 0,0).
+	// Screens without an explicit freeform position keep their grid placement
+	// and are skipped here (caller should have called the grid generator first).
+	if (m_screenPositions.empty() || m_displayRects.empty()) {
+		return;
+	}
+
+	struct GlobalRect { SInt32 x, y, w, h; std::string screen; };
+	std::vector<GlobalRect> allRects;
+	for (CellMap::const_iterator s = m_map.begin(); s != m_map.end(); ++s) {
+		std::map<std::string, std::pair<SInt32, SInt32>, barrier::string::CaselessCmp>::const_iterator p =
+			m_screenPositions.find(s->first);
+		if (p == m_screenPositions.end()) {
+			continue;
+		}
+		SInt32 sx = p->second.first;
+		SInt32 sy = p->second.second;
+		std::map<std::string, std::vector<ScreenRect>, barrier::string::CaselessCmp>::const_iterator r =
+			m_displayRects.find(s->first);
+		if (r == m_displayRects.end() || r->second.empty()) {
+			// Fall back to bounding box display rects are not yet known.
+			continue;
+		}
+		for (std::vector<ScreenRect>::const_iterator d = r->second.begin();
+				d != r->second.end(); ++d) {
+			GlobalRect g;
+			g.x = sx + d->x;
+			g.y = sy + d->y;
+			g.w = d->w;
+			g.h = d->h;
+			g.screen = s->first;
+			allRects.push_back(g);
+		}
+	}
+
+	// A small gap or overlap (a few pixels of drag imprecision in the GUI's
+	// freeform canvas) still counts as touching, so link generation isn't
+	// fragile to sub-pixel misalignment.
+	static const SInt32 kFreeformAdjacencyTolerancePx = 15;
+	// For each ordered pair of displays on different screens, check
+	// adjacency on each side and create a partial edge link for the
+	// overlapping interval.
+	for (size_t a = 0; a < allRects.size(); ++a) {
+		for (size_t b = 0; b < allRects.size(); ++b) {
+			if (allRects[a].screen == allRects[b].screen) {
+				continue;
+			}
+			const GlobalRect& ra = allRects[a];
+			const GlobalRect& rb = allRects[b];
+
+			// ra bottom (y+ h) == rb top (y)  -> ra below rb is on top
+			if (std::abs((ra.y + ra.h) - rb.y) <= kFreeformAdjacencyTolerancePx) {
+				SInt32 ox0 = std::max(ra.x, rb.x);
+				SInt32 ox1 = std::min(ra.x + ra.w, rb.x + rb.w);
+				if (ox0 < ox1) {
+					float a0 = float(ox0 - ra.x) / float(ra.w);
+					float a1 = float(ox1 - ra.x) / float(ra.w);
+					float b0 = float(ox0 - rb.x) / float(rb.w);
+					float b1 = float(ox1 - rb.x) / float(rb.w);
+					connect(ra.screen, kBottom, a0, a1, rb.screen, b0, b1);
+				}
+			}
+			// ra top == rb bottom
+			if (std::abs((rb.y + rb.h) - ra.y) <= kFreeformAdjacencyTolerancePx) {
+				SInt32 ox0 = std::max(ra.x, rb.x);
+				SInt32 ox1 = std::min(ra.x + ra.w, rb.x + rb.w);
+				if (ox0 < ox1) {
+					float a0 = float(ox0 - ra.x) / float(ra.w);
+					float a1 = float(ox1 - ra.x) / float(ra.w);
+					float b0 = float(ox0 - rb.x) / float(rb.w);
+					float b1 = float(ox1 - rb.x) / float(rb.w);
+					connect(ra.screen, kTop, a0, a1, rb.screen, b0, b1);
+				}
+			}
+			// ra right == rb left
+			if (std::abs((ra.x + ra.w) - rb.x) <= kFreeformAdjacencyTolerancePx) {
+				SInt32 oy0 = std::max(ra.y, rb.y);
+				SInt32 oy1 = std::min(ra.y + ra.h, rb.y + rb.h);
+				if (oy0 < oy1) {
+					float a0 = float(oy0 - ra.y) / float(ra.h);
+					float a1 = float(oy1 - ra.y) / float(ra.h);
+					float b0 = float(oy0 - rb.y) / float(rb.h);
+					float b1 = float(oy1 - rb.y) / float(rb.h);
+					connect(ra.screen, kRight, a0, a1, rb.screen, b0, b1);
+				}
+			}
+			// ra left == rb right
+			if (std::abs((rb.x + rb.w) - ra.x) <= kFreeformAdjacencyTolerancePx) {
+				SInt32 oy0 = std::max(ra.y, rb.y);
+				SInt32 oy1 = std::min(ra.y + ra.h, rb.y + rb.h);
+				if (oy0 < oy1) {
+					float a0 = float(oy0 - ra.y) / float(ra.h);
+					float a1 = float(oy1 - ra.y) / float(ra.h);
+					float b0 = float(oy0 - rb.y) / float(rb.h);
+					float b1 = float(oy1 - rb.y) / float(rb.h);
+					connect(ra.screen, kLeft, a0, a1, rb.screen, b0, b1);
+				}
+			}
 		}
 	}
 }

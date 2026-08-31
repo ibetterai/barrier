@@ -52,6 +52,18 @@ public:
     */
     barrier::IStream*    getStream() const;
 
+    //! Set protocol minor version negotiated with the client
+    /*!
+    Set by ClientProxyUnknown once the hello reply is parsed.  Kept
+    explicitly so capability-gated behavior (e.g. protocol 1.7 display
+    names) can be decided even when the proxy class itself is shared
+    between adjacent protocol versions.
+    */
+    void                setPeerMinorVersion(SInt16 minor);
+
+    //! Get protocol minor version negotiated with the client
+    SInt16                getPeerMinorVersion() const;
+
     //@}
 
     // IScreen
@@ -87,4 +99,5 @@ public:
 
 private:
     barrier::IStream*    m_stream;
+    SInt16                m_peerMinorVersion;
 };

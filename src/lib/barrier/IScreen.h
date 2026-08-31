@@ -19,12 +19,14 @@
 #pragma once
 
 #include "barrier/clipboard_types.h"
+#include "barrier/protocol_types.h"
 #include "base/Event.h"
 #include "base/EventTypes.h"
 #include "common/IInterface.h"
 
-class IClipboard;
+#include <vector>
 
+class IClipboard;
 //! Screen interface
 /*!
 This interface defines the methods common to all screens.
@@ -60,6 +62,23 @@ public:
     */
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const = 0;
+
+    //! Get per-display rectangles
+    /*!
+    Fill \c displays with the rectangles of each physical display, in
+    screen-global coordinates.  A single-display screen reports one
+    rectangle equal to the screen shape; callers that only have a
+    bounding box may report an empty list.
+    */
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const = 0;
+
+    //! Get per-display names
+    /*!
+    Fill \c names with the name of each physical display, in the same
+    order as getDisplays().  Screens that cannot name their displays
+    report an empty list.
+    */
+    virtual void        getDisplayNames(std::vector<std::string>& names) const = 0;
 
     //! Get cursor position
     /*!

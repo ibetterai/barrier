@@ -18,6 +18,7 @@
 
 #include "server/ClientProxy1_0.h"
 
+#include "barrier/DisplayNames.h"
 #include "barrier/ProtocolUtil.h"
 #include "barrier/XBarrier.h"
 #include "io/IStream.h"
@@ -211,6 +212,24 @@ ClientProxy1_0::parseMessage(const UInt8* code)
         }
         return false;
     }
+    else if (memcmp(code, kMsgDDisplayInfo, 4) == 0) {
+        return recvDisplayInfo();
+    }
+    else if (memcmp(code, kMsgDDisplayNames, 4) == 0) {
+        // DDNM is a protocol 1.7 message: a peer that negotiated below 1.7
+        // must not influence display metadata.  consume and ignore the
+        // payload -- leaving it unread would desync the message stream.
+        if (getPeerMinorVersion() < kProtocolMinorVersion) {
+            std::vector<UInt32> discard;
+            if (!ProtocolUtil::readf(getStream(), kMsgDDisplayNames + 4, &discard)) {
+                return false;
+            }
+            LOG((CLOG_DEBUG "ignoring display names from pre-1.7 client \"%s\"",
+                 getName().c_str()));
+            return true;
+        }
+        return recvDisplayNames();
+    }
     else if (memcmp(code, kMsgCNoop, 4) == 0) {
         // discard no-ops
         LOG((CLOG_DEBUG2 "no-op from", getName().c_str()));
@@ -261,6 +280,18 @@ ClientProxy1_0::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
     y = m_info.m_y;
     w = m_info.m_w;
     h = m_info.m_h;
+}
+
+void
+ClientProxy1_0::getDisplays(std::vector<ScreenRect>& displays) const
+{
+    displays = m_info.m_displays;
+}
+
+void
+ClientProxy1_0::getDisplayNames(std::vector<std::string>& names) const
+{
+    names = m_info.m_displayNames;
 }
 
 void
@@ -453,6 +484,71 @@ ClientProxy1_0::recvInfo()
     // acknowledge receipt
     LOG((CLOG_DEBUG1 "send info ack to \"%s\"", getName().c_str()));
     ProtocolUtil::writef(getStream(), kMsgCInfoAck);
+    return true;
+}
+
+bool
+ClientProxy1_0::recvDisplayInfo()
+{
+    std::vector<UInt32> data;
+    if (!ProtocolUtil::readf(getStream(), kMsgDDisplayInfo + 4, &data)) {
+        return false;
+    }
+
+    m_info.m_displays.clear();
+    // a fresh geometry invalidates any previously received display names:
+    // names only apply to the rectangles they were exchanged with.
+    m_info.m_displayNames.clear();
+    if (!data.empty() && (data.size() % 4) == 0) {
+        m_info.m_displays.reserve(data.size() / 4);
+        for (size_t i = 0; i + 4 <= data.size(); i += 4) {
+            ScreenRect r;
+            r.x = (SInt32)data[i + 0];
+            r.y = (SInt32)data[i + 1];
+            r.w = (SInt32)data[i + 2];
+            r.h = (SInt32)data[i + 3];
+            m_info.m_displays.push_back(r);
+        }
+    }
+
+    LOG((CLOG_DEBUG "received client \"%s\" display info: %u display(s)",
+         getName().c_str(), (unsigned)m_info.m_displays.size()));
+    return true;
+}
+
+bool
+ClientProxy1_0::recvDisplayNames()
+{
+    std::vector<UInt32> data;
+    if (!ProtocolUtil::readf(getStream(), kMsgDDisplayNames + 4, &data)) {
+        return false;
+    }
+
+    std::vector<std::string> names;
+    if (!barrier::decodeDisplayNames(data, m_info.m_displays.size(), names)) {
+        // malformed, truncated, or count-mismatched payload: drop the
+        // names but keep the display rectangles already parsed from DDIS.
+        LOG((CLOG_DEBUG "received client \"%s\" invalid display names; ignoring",
+             getName().c_str()));
+        names.clear();
+    }
+
+    m_info.m_displayNames = names;
+    LOG((CLOG_DEBUG "received client \"%s\" display names: %u name(s)",
+         getName().c_str(), (unsigned)m_info.m_displayNames.size()));
+    // The GUI parses this line (MainWindow::checkClientDisplayNames) to
+    // learn the ordered client display names; keep the format stable.
+    // CLOG_INFO (not DEBUG) so it passes the default INFO log filter and
+    // actually reaches the GUI.
+    std::string joined;
+    for (size_t i = 0; i < m_info.m_displayNames.size(); ++i) {
+        if (i > 0) {
+            joined += ", ";
+        }
+        joined += "\"" + m_info.m_displayNames[i] + "\"";
+    }
+    LOG((CLOG_INFO "client \"%s\" display names: [%s]",
+         getName().c_str(), joined.c_str()));
     return true;
 }
 

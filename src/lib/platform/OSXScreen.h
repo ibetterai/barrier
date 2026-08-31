@@ -26,6 +26,7 @@
 #include "common/stdvector.h"
 
 #include <bitset>
+#include <sys/types.h>
 #include <Carbon/Carbon.h>
 #include <mach/mach_port.h>
 #include <mach/mach_interface.h>
@@ -63,6 +64,8 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 
     // IPrimaryScreen overrides
@@ -98,6 +101,82 @@ public:
     virtual bool        isPrimary() const;
     virtual void        fakeDraggingFiles(DragFileList fileList);
     virtual std::string& getDraggingFilename();
+
+    //! Index of the display containing (x, y) in an ordered display
+    //! snapshot, or -1 when the coordinate is outside every display.
+    /*! Rects use half-open [x, x + w) x [y, y + h) bounds so the edge
+        shared by adjacent displays resolves to exactly one of them. */
+    static int        displayIndexAt(const std::vector<ScreenRect>& displays,
+                            SInt32 x, SInt32 y);
+
+    //! Whether an entry must start a new wake hold.
+    /*! An awake display never requests a wake (false regardless of the
+        hold state).  An asleep display requests a new hold only when
+        none is active (now >= holdExpiry); an entry during an active
+        hold refreshes that hold instead of stacking a second child. */
+    static bool        shouldRequestWake(bool displayAsleep,
+                            SInt32 now, SInt32 holdExpiry);
+
+    //! Direction sign for a host's natural-scroll preference.
+    /*! Barrier's DMouseWheel transport carries wheel deltas in the
+        classic wheel convention, which is what macOS reports when
+        "Scroll direction: Natural" is off: positive yDelta scrolls
+        content toward the top of the document and positive xDelta
+        scrolls content toward the right.  Natural scrolling inverts
+        both axes, so this sign maps a host's local deltas to the
+        transport convention and back (the mapping is its own inverse). */
+    static SInt32        naturalScrollDirectionSign(bool naturalScrolling);
+
+    //! Convert a wheel delta pair between a host's local convention
+    //! and Barrier's transport convention.
+    /*! Each host applies its own preference exactly once: the source
+        normalizes captured deltas before relaying them and the target
+        normalizes received deltas before injecting them.  Hosts that
+        share a preference pass deltas through unchanged; hosts with
+        differing preferences see every axis inverted, so the perceived
+        content direction matches on both sides. */
+    static void        normalizeScrollDeltas(bool naturalScrolling,
+                            SInt32& xDelta, SInt32& yDelta);
+
+    //! Whether a wheel event captured by the primary screen's event
+    //! tap should be forwarded to the remote target.
+    /*! Only events captured while the primary screen owns a remote
+        target (the cursor is off the primary and on a client screen)
+        are relayed.  Wheel events captured while the cursor is on the
+        primary itself are left to the local system, and a secondary
+        screen never captures input. */
+    static bool        shouldForwardRemoteWheel(bool isPrimary,
+                            bool isOnScreen);
+
+    //! Whether macOS scroll diagnostics should be enabled for an env value.
+    /*! The diagnostic spike is intentionally opt-in so normal users never
+        receive noisy logs unless BARRIER_MACOS_SCROLL_DIAGNOSTICS is set. */
+    static bool        shouldEnableScrollDiagnostics(const char* value);
+
+    //! Whether the experimental Spaces swipe shortcut fallback is enabled.
+    static bool        shouldEnableSpacesSwipeFallback(const char* value);
+
+    struct SpacesSwipeSourceState {
+        double accumulatedXSignal = 0.0;
+        SInt64 lastEventTimeMs = 0;
+        SInt64 cooldownUntilTimeMs = 0;
+    };
+
+    //! Whether a wheel message carries an experimental Spaces swipe command
+    //! rather than a real wheel delta.
+    static bool        isSyntheticSpacesSwipeWheel(SInt32 xDelta,
+                            SInt32 yDelta);
+
+    //! Update accumulated Magic Mouse raw gesture signal and decide whether it
+    //! should fire a synthetic Spaces swipe command.
+    static bool        updateSpacesSwipeSourceState(
+                            SpacesSwipeSourceState& state,
+                            double xSignal,
+                            SInt64 nowTimeMs,
+                            double threshold,
+                            SInt32 windowMs,
+                            SInt32 cooldownMs,
+                            SInt32& xDirection);
 
     const std::string& getDropTarget() const { return m_dropTarget; }
     void                waitForCarbonLoop() const;
@@ -154,6 +233,11 @@ private:
 
     // get the current scroll wheel speed
     double                getScrollSpeedFactor() const;
+
+    // whether this host scrolls "naturally" (content follows the
+    // fingers); missing or unreadable preferences fall back to the
+    // macOS default since Lion
+    bool                getNaturalScrolling() const;
 
     // enable/disable drag handling for buttons 3 and up
     void                enableDragTimer(bool enable);
@@ -259,6 +343,18 @@ private:
     SInt32                m_w, m_h;
     SInt32                m_xCenter, m_yCenter;
 
+    //! One physical display captured during a geometry refresh.
+    /*! id, rect, and name are resolved together so getDisplays() and
+        getDisplayNames() always report the same ordered snapshot; a
+        topology change rebuilds the whole vector. */
+    struct DisplayEntry {
+        CGDirectDisplayID    m_id;
+        ScreenRect            m_rect;
+        std::string            m_name;
+    };
+
+    std::vector<DisplayEntry>    m_displays;
+
     // mouse state
     mutable SInt32        m_xCursor, m_yCursor;
     mutable bool        m_cursorPosValid;
@@ -304,6 +400,13 @@ private:
     EventHandlerRef            m_switchEventHandlerRef;
 
     // sleep / wakeup
+    // conditionally wake the display under the entry coordinate; used
+    // by the client-side enter() path
+    void                wakeEnteredDisplay();
+    void                startWakeHold(SInt32 now);
+    void                refreshWakeHold(SInt32 now);
+    void                stopWakeHold();
+
     Mutex*                    m_pmMutex;
     Thread*                m_pmWatchThread;
     CondVar<bool>*            m_pmThreadReady;
@@ -339,6 +442,11 @@ private:
 
     Thread*                m_getDropTargetThread;
     std::string m_dropTarget;
+
+    //! Active caffeinate child holding the display awake, or -1.
+    pid_t                m_wakeHoldPid;
+    //! Absolute time (seconds) the current wake hold expires; 0 = none.
+    SInt32                m_wakeHoldExpiry;
 
 #if defined(MAC_OS_X_VERSION_10_7)
     Mutex*                    m_carbonLoopMutex;

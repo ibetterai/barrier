@@ -110,7 +110,7 @@ void
 Screen::enter(KeyModifierMask toggleMask)
 {
     assert(m_entered == false);
-    LOG((CLOG_INFO "entering screen"));
+    LOG((CLOG_INFO "entering screen%s%s", m_screenName.empty() ? "" : " ", m_screenName.c_str()));
 
     // now on screen
     m_entered = true;
@@ -128,7 +128,7 @@ bool
 Screen::leave()
 {
     assert(m_entered == true);
-    LOG((CLOG_INFO "leaving screen"));
+    LOG((CLOG_INFO "leaving screen%s%s", m_screenName.empty() ? "" : " ", m_screenName.c_str()));
 
     if (!m_screen->leave()) {
         return false;
@@ -488,6 +488,18 @@ void
 Screen::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
 {
     m_screen->getShape(x, y, w, h);
+}
+
+void
+Screen::getDisplays(std::vector<ScreenRect>& displays) const
+{
+    m_screen->getDisplays(displays);
+}
+
+void
+Screen::getDisplayNames(std::vector<std::string>& names) const
+{
+    m_screen->getDisplayNames(names);
 }
 
 void
