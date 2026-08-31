@@ -10,16 +10,16 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
 
 ## Download
 
-- Use [GitHub Releases](https://github.com/ibetterai/barrier/releases) to
-  download the latest Apple Silicon macOS build and view reconstructed notes
-  for earlier releases.
+- Use [GitHub Releases](https://github.com/ibetterai/barrier/releases) to view
+  reconstructed notes. Apple Silicon DMGs appear there when a release includes
+  a verified binary asset.
 - See the [changelog](CHANGELOG.md) and
   [feature and fix ledger](docs/history/feature-fix-ledger.md) for the
   reconstructed public product history.
 
-Barrier 3.4.0 and later packages from this fork target Apple Silicon and macOS
-12 or later. These packages are Developer ID signed, Apple notarized, and
-stapled for offline Gatekeeper verification.
+Release candidates for Barrier 3.4.0 and later target Apple Silicon and macOS
+12 or later. Before attaching a DMG, verify its Developer ID signature, Apple
+notarization ticket, stapling, and offline Gatekeeper acceptance.
 
 ## What this fork adds
 
