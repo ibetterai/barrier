@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Historical false positives only: upstream Crypto++ known-answer test vectors and macOS key-map constants."
+paths = [
+  '''tools/cryptopp561/TestVectors/.*''',
+  '''src/lib/platform/COSXKeyState[.]cpp''',
+]

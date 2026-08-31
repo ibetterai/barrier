@@ -63,6 +63,8 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const = 0;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const = 0;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const = 0;
+    virtual void        getDisplayNames(std::vector<std::string>& names) const = 0;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const = 0;
 
     // IClient overrides

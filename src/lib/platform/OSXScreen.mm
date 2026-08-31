@@ -21,7 +21,7 @@
 #include "base/EventQueue.h"
 #include "client/Client.h"
 #include "platform/OSXClipboard.h"
-#include "platform/OSXEventQueueBuffer.h"
+#include "base/SimpleEventQueueBuffer.h"
 #include "platform/OSXKeyState.h"
 #include "platform/OSXScreenSaver.h"
 #include "platform/OSXDragSimulator.h"
@@ -44,6 +44,19 @@
 #include <AvailabilityMacros.h>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <AppKit/NSEvent.h>
+#include <AppKit/NSTouch.h>
+#include <IOKit/graphics/IOGraphicsLib.h>
+
+#include <stdarg.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
 // This isn't in any Apple SDK that I know of as of yet.
 enum {
@@ -55,6 +68,558 @@ enum {
 enum {
 	kCarbonLoopWaitTimeout = 10
 };
+
+namespace {
+
+//! Path to the tool that wakes and briefly holds an asleep display.
+const char kWakeHoldPath[] = "/usr/bin/caffeinate";
+//! How long a wake hold lasts before caffeinate exits on its own.
+const SInt32 kWakeHoldSeconds = 15;
+//! Enables scroll-event diagnostics for the Magic Mouse Spaces swipe spike.
+const char kScrollDiagnosticsEnv[] = "BARRIER_MACOS_SCROLL_DIAGNOSTICS";
+//! Overrides the Magic Mouse Spaces swipe fallback; enabled by default on macOS.
+const char kSpacesSwipeFallbackEnv[] = "BARRIER_MACOS_SPACES_SWIPE_FALLBACK";
+//! Optional direction inversion for the fallback.
+const char kSpacesSwipeInvertEnv[] = "BARRIER_MACOS_SPACES_SWIPE_INVERT";
+//! Optional raw gesture threshold for source-side Magic Mouse swipe detection.
+const char kSpacesSwipeSourceThresholdEnv[] =
+	"BARRIER_MACOS_SPACES_SWIPE_SOURCE_THRESHOLD";
+//! Optional maximum gap between source raw gesture events in one swipe.
+const char kSpacesSwipeSourceWindowMsEnv[] =
+	"BARRIER_MACOS_SPACES_SWIPE_SOURCE_WINDOW_MS";
+//! Optional source-side cooldown after emitting a synthetic swipe.
+const char kSpacesSwipeSourceCooldownMsEnv[] =
+	"BARRIER_MACOS_SPACES_SWIPE_SOURCE_COOLDOWN_MS";
+//! Observed Magic Mouse type=30 raw field 124 sums to about 0.6-5 per swipe.
+const double kSpacesSwipeDefaultSourceThreshold = 0.55;
+//! Observed type=30 raw bursts are tight; keep this short to separate repeats.
+const SInt32 kSpacesSwipeDefaultSourceWindowMs = 180;
+//! Source raw signal is cleaner than target wheel momentum; repeats can be fast.
+const SInt32 kSpacesSwipeDefaultSourceCooldownMs = 180;
+//! Private CGEvent field carrying horizontal gesture direction on the test Macs.
+const CGEventField kMagicMouseSpacesSwipeRawXField =
+	static_cast<CGEventField>(124);
+//! Synthetic wheel magnitude large enough for target-side fallback recognition.
+const SInt32 kSpacesSwipeSyntheticWheelDelta = 30000;
+//! Marks a mouseWheel packet as a Spaces swipe command.
+const SInt32 kSpacesSwipeSyntheticWheelSentinel = -31415;
+//! Extra test-build log sink that does not depend on the GUI log window.
+const char kSwipeTestDiagnosticsLogPath[] = "/tmp/barrier-macos-scroll-diagnostics.log";
+OSXScreen::SpacesSwipeSourceState g_spacesSwipeSourceState;
+
+bool
+isScrollDiagnosticsEnabled()
+{
+	return OSXScreen::shouldEnableScrollDiagnostics(getenv(kScrollDiagnosticsEnv));
+}
+
+bool
+isSpacesSwipeFallbackEnabled()
+{
+	const char* value = getenv(kSpacesSwipeFallbackEnv);
+	if (value == NULL || value[0] == '\0') {
+		return true;
+	}
+	return OSXScreen::shouldEnableSpacesSwipeFallback(value);
+}
+
+SInt32
+getPositiveEnvOrDefault(const char* envName, SInt32 defaultValue)
+{
+	const char* value = getenv(envName);
+	if (value == NULL || value[0] == '\0') {
+		return defaultValue;
+	}
+
+	const long parsed = strtol(value, NULL, 10);
+	if (parsed <= 0 || parsed > INT32_MAX) {
+		return defaultValue;
+	}
+
+	return static_cast<SInt32>(parsed);
+}
+
+double
+getPositiveDoubleEnvOrDefault(const char* envName, double defaultValue)
+{
+	const char* value = getenv(envName);
+	if (value == NULL || value[0] == '\0') {
+		return defaultValue;
+	}
+
+	char* end = NULL;
+	const double parsed = strtod(value, &end);
+	if (end == value || parsed <= 0.0 || !isfinite(parsed)) {
+		return defaultValue;
+	}
+
+	return parsed;
+}
+
+bool
+isSpacesSwipeDirectionInverted()
+{
+	return OSXScreen::shouldEnableSpacesSwipeFallback(
+		getenv(kSpacesSwipeInvertEnv));
+}
+
+double
+getSpacesSwipeSourceThreshold()
+{
+	return getPositiveDoubleEnvOrDefault(kSpacesSwipeSourceThresholdEnv,
+										 kSpacesSwipeDefaultSourceThreshold);
+}
+
+SInt32
+getSpacesSwipeSourceWindowMs()
+{
+	return getPositiveEnvOrDefault(kSpacesSwipeSourceWindowMsEnv,
+								   kSpacesSwipeDefaultSourceWindowMs);
+}
+
+SInt32
+getSpacesSwipeSourceCooldownMs()
+{
+	return getPositiveEnvOrDefault(kSpacesSwipeSourceCooldownMsEnv,
+								   kSpacesSwipeDefaultSourceCooldownMs);
+}
+
+SInt64
+getMonotonicMilliseconds()
+{
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+		return 0;
+	}
+
+	return static_cast<SInt64>(now.tv_sec) * 1000 +
+		   static_cast<SInt64>(now.tv_nsec / 1000000);
+}
+
+SInt64
+getCGEventIntegerField(CGEventRef event, CGEventField field)
+{
+	return CGEventGetIntegerValueField(event, field);
+}
+
+double
+fixedPointToDouble(SInt64 value)
+{
+	return static_cast<double>(value) / 65536.0;
+}
+
+const char*
+nsEventTypeName(NSInteger type)
+{
+	switch (type) {
+	case NSEventTypeScrollWheel:
+		return "scroll";
+	case NSEventTypeGesture:
+		return "gesture";
+	case NSEventTypeMagnify:
+		return "magnify";
+	case NSEventTypeSwipe:
+		return "swipe";
+	case NSEventTypeRotate:
+		return "rotate";
+	case NSEventTypeBeginGesture:
+		return "begin-gesture";
+	case NSEventTypeEndGesture:
+		return "end-gesture";
+	case NSEventTypeSystemDefined:
+		return "system-defined";
+	default:
+		return "other";
+	}
+}
+
+bool
+nsEventSupportsDelta(NSEventType type)
+{
+	switch (type) {
+	case NSEventTypeScrollWheel:
+	case NSEventTypeMouseMoved:
+	case NSEventTypeLeftMouseDragged:
+	case NSEventTypeRightMouseDragged:
+	case NSEventTypeOtherMouseDragged:
+	case NSEventTypeSwipe:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void
+appendDiagnostic(char* buffer, size_t bufferSize, size_t& offset,
+				 const char* format, ...)
+{
+	if (offset >= bufferSize) {
+		return;
+	}
+
+	va_list args;
+	va_start(args, format);
+	const int written = vsnprintf(buffer + offset, bufferSize - offset,
+								  format, args);
+	va_end(args);
+
+	if (written < 0) {
+		return;
+	}
+
+	if (static_cast<size_t>(written) >= bufferSize - offset) {
+		offset = bufferSize - 1;
+		buffer[offset] = '\0';
+		return;
+	}
+
+	offset += static_cast<size_t>(written);
+}
+
+void
+describeRawCGEventFields(CGEventRef event, char* buffer, size_t bufferSize)
+{
+	if (bufferSize == 0) {
+		return;
+	}
+
+	buffer[0] = '\0';
+	size_t offset = 0;
+	appendDiagnostic(buffer, bufferSize, offset, "rawFields=");
+
+	bool sawField = false;
+	for (int field = 0; field <= 255 && offset < bufferSize - 1; ++field) {
+		const CGEventField eventField = static_cast<CGEventField>(field);
+		const SInt64 integerValue = CGEventGetIntegerValueField(event,
+																eventField);
+		const double doubleValue = CGEventGetDoubleValueField(event,
+															  eventField);
+		if (integerValue == 0 && fabs(doubleValue) < 0.000001) {
+			continue;
+		}
+
+		sawField = true;
+		appendDiagnostic(buffer, bufferSize, offset, "f%d=%lld/%.6f;",
+						 field,
+						 static_cast<long long>(integerValue),
+						 doubleValue);
+	}
+
+	if (!sawField) {
+		appendDiagnostic(buffer, bufferSize, offset, "none");
+	}
+}
+
+void
+describeNSEventFromCGEvent(CGEventRef event, char* buffer, size_t bufferSize)
+{
+	if (bufferSize == 0) {
+		return;
+	}
+
+	buffer[0] = '\0';
+
+	@autoreleasepool {
+		NSEvent* nsEvent = [NSEvent eventWithCGEvent:event];
+		if (nsEvent == nil) {
+			snprintf(buffer, bufferSize, "nsEvent=nil");
+			return;
+		}
+
+		const NSEventType nsType = [nsEvent type];
+		CGFloat deltaX = 0.0;
+		CGFloat deltaY = 0.0;
+		CGFloat deltaZ = 0.0;
+		CGFloat scrollingDeltaX = 0.0;
+		CGFloat scrollingDeltaY = 0.0;
+		BOOL hasPreciseScrollingDeltas = NO;
+		BOOL directionInvertedFromDevice = NO;
+		NSEventPhase phase = NSEventPhaseNone;
+		NSEventPhase momentumPhase = NSEventPhaseNone;
+		CGFloat magnification = 0.0;
+		CGFloat rotation = 0.0;
+		NSUInteger touchCount = 0;
+		char touchDetails[512];
+		touchDetails[0] = '\0';
+
+		if (nsEventSupportsDelta(nsType)) {
+			deltaX = [nsEvent deltaX];
+			deltaY = [nsEvent deltaY];
+			deltaZ = [nsEvent deltaZ];
+		}
+
+		if (nsType == NSEventTypeScrollWheel) {
+			hasPreciseScrollingDeltas = [nsEvent hasPreciseScrollingDeltas];
+			scrollingDeltaX = [nsEvent scrollingDeltaX];
+			scrollingDeltaY = [nsEvent scrollingDeltaY];
+			directionInvertedFromDevice = [nsEvent isDirectionInvertedFromDevice];
+			phase = [nsEvent phase];
+			momentumPhase = [nsEvent momentumPhase];
+		}
+
+		if (nsType == NSEventTypeMagnify) {
+			magnification = [nsEvent magnification];
+		}
+		else if (nsType == NSEventTypeRotate) {
+			rotation = [nsEvent rotation];
+		}
+		else if (nsType == NSEventTypeGesture) {
+			NSSet<NSTouch*>* touches = [nsEvent allTouches];
+			touchCount = [touches count];
+			size_t touchOffset = 0;
+			NSUInteger touchIndex = 0;
+			appendDiagnostic(touchDetails, sizeof(touchDetails), touchOffset,
+							 " nsTouches=%lu",
+							 static_cast<unsigned long>(touchCount));
+			for (NSTouch* touch in touches) {
+				if (touchIndex >= 4) {
+					appendDiagnostic(touchDetails, sizeof(touchDetails),
+									 touchOffset, " ...");
+					break;
+				}
+
+				const NSPoint normalizedPosition = [touch normalizedPosition];
+				const NSSize deviceSize = [touch deviceSize];
+				appendDiagnostic(touchDetails, sizeof(touchDetails),
+								 touchOffset,
+								 " t%lu{phase=%lu pos=(%.4f,%.4f) "
+								 "device=(%.4f,%.4f) resting=%d}",
+								 static_cast<unsigned long>(touchIndex),
+								 static_cast<unsigned long>([touch phase]),
+								 static_cast<double>(normalizedPosition.x),
+								 static_cast<double>(normalizedPosition.y),
+								 static_cast<double>(deviceSize.width),
+								 static_cast<double>(deviceSize.height),
+								 [touch isResting] ? 1 : 0);
+				++touchIndex;
+			}
+		}
+
+		snprintf(buffer, bufferSize,
+			"nsType=%ld(%s) nsDelta=(%.4f,%.4f,%.4f) "
+			"nsScrolling=(%.4f,%.4f) nsPrecise=%d nsInverted=%d "
+			"nsPhase=%lu nsMomentum=%lu nsMagnification=%.6f "
+			"nsRotation=%.6f%s",
+			static_cast<long>(nsType), nsEventTypeName(nsType),
+			static_cast<double>(deltaX),
+			static_cast<double>(deltaY),
+			static_cast<double>(deltaZ),
+			static_cast<double>(scrollingDeltaX),
+			static_cast<double>(scrollingDeltaY),
+			hasPreciseScrollingDeltas ? 1 : 0,
+			directionInvertedFromDevice ? 1 : 0,
+			static_cast<unsigned long>(phase),
+			static_cast<unsigned long>(momentumPhase),
+			static_cast<double>(magnification),
+			static_cast<double>(rotation),
+			touchDetails);
+	}
+}
+
+void
+appendSwipeTestDiagnosticLine(const char* line)
+{
+	if (strstr(BARRIER_VERSION, "swipe-test") == NULL) {
+		return;
+	}
+
+	FILE* file = fopen(kSwipeTestDiagnosticsLogPath, "a");
+	if (file == NULL) {
+		return;
+	}
+
+	fprintf(file, "%s\n", line);
+	fclose(file);
+}
+
+void
+logScrollDiagnosticsEvent(const char* side, CGEventRef event,
+							bool isPrimary, bool isOnScreen,
+							bool willForward, bool naturalScrolling,
+							SInt32 barrierXDelta, SInt32 barrierYDelta,
+							SInt32 transportXDelta, SInt32 transportYDelta)
+{
+	if (!isScrollDiagnosticsEnabled()) {
+		return;
+	}
+
+	const SInt64 fixedAxis1 = getCGEventIntegerField(
+		event, kCGScrollWheelEventFixedPtDeltaAxis1);
+	const SInt64 fixedAxis2 = getCGEventIntegerField(
+		event, kCGScrollWheelEventFixedPtDeltaAxis2);
+	const SInt64 fixedAxis3 = getCGEventIntegerField(
+		event, kCGScrollWheelEventFixedPtDeltaAxis3);
+	const SInt64 pointAxis1 = getCGEventIntegerField(
+		event, kCGScrollWheelEventPointDeltaAxis1);
+	const SInt64 pointAxis2 = getCGEventIntegerField(
+		event, kCGScrollWheelEventPointDeltaAxis2);
+	const SInt64 pointAxis3 = getCGEventIntegerField(
+		event, kCGScrollWheelEventPointDeltaAxis3);
+	const SInt64 scrollPhase = getCGEventIntegerField(
+		event, kCGScrollWheelEventScrollPhase);
+	const SInt64 momentumPhase = getCGEventIntegerField(
+		event, kCGScrollWheelEventMomentumPhase);
+	const SInt64 continuous = getCGEventIntegerField(
+		event, kCGScrollWheelEventIsContinuous);
+	const CGPoint location = CGEventGetLocation(event);
+	char nsDetails[512];
+	describeNSEventFromCGEvent(event, nsDetails, sizeof(nsDetails));
+
+	char message[1600];
+	snprintf(message, sizeof(message),
+		"pid=%d unixTime=%lld macOS scroll diagnostics [%s]: type=%u location=(%.1f,%.1f) "
+		"primary=%d onScreen=%d willForward=%d natural=%d "
+		"fixed=(%lld,%lld,%lld) fixedFloat=(%.4f,%.4f,%.4f) "
+		"point=(%lld,%lld,%lld) phase=%lld momentum=%lld continuous=%lld "
+		"barrierLocal=(%d,%d) barrierTransport=(%d,%d) %s",
+		static_cast<int>(getpid()),
+		static_cast<long long>(time(NULL)),
+		side,
+		static_cast<unsigned int>(CGEventGetType(event)),
+		location.x, location.y, isPrimary ? 1 : 0, isOnScreen ? 1 : 0,
+		willForward ? 1 : 0, naturalScrolling ? 1 : 0,
+		static_cast<long long>(fixedAxis1),
+		static_cast<long long>(fixedAxis2),
+		static_cast<long long>(fixedAxis3),
+		fixedPointToDouble(fixedAxis1),
+		fixedPointToDouble(fixedAxis2),
+		fixedPointToDouble(fixedAxis3),
+		static_cast<long long>(pointAxis1),
+		static_cast<long long>(pointAxis2),
+		static_cast<long long>(pointAxis3),
+		static_cast<long long>(scrollPhase),
+		static_cast<long long>(momentumPhase),
+		static_cast<long long>(continuous),
+		barrierXDelta, barrierYDelta, transportXDelta, transportYDelta,
+		nsDetails);
+	LOG((CLOG_NOTE "%s", message));
+	appendSwipeTestDiagnosticLine(message);
+}
+
+void
+logUnhandledInputDiagnosticsEvent(const char* side, CGEventType type,
+								  CGEventRef event, bool isPrimary,
+								  bool isOnScreen)
+{
+	if (!isScrollDiagnosticsEnabled()) {
+		return;
+	}
+
+	const CGPoint location = CGEventGetLocation(event);
+	char nsDetails[1024];
+	describeNSEventFromCGEvent(event, nsDetails, sizeof(nsDetails));
+	char rawDetails[1400];
+	describeRawCGEventFields(event, rawDetails, sizeof(rawDetails));
+
+	char message[2800];
+	snprintf(message, sizeof(message),
+		"pid=%d unixTime=%lld macOS input diagnostics [%s]: type=%u "
+		"location=(%.1f,%.1f) primary=%d onScreen=%d %s %s",
+		static_cast<int>(getpid()),
+		static_cast<long long>(time(NULL)),
+		side,
+		static_cast<unsigned int>(type),
+		location.x, location.y,
+		isPrimary ? 1 : 0,
+		isOnScreen ? 1 : 0,
+		nsDetails,
+		rawDetails);
+	LOG((CLOG_NOTE "%s", message));
+	appendSwipeTestDiagnosticLine(message);
+}
+
+static const KeyButton kSpacesSwipeSyntheticControlButton = 0x01fe;
+static const KeyButton kSpacesSwipeSyntheticArrowButton = 0x01ff;
+
+void
+postControlArrowShortcut(const OSXScreen* screen, KeyID arrowKey)
+{
+	OSXScreen* mutableScreen = const_cast<OSXScreen*>(screen);
+
+	mutableScreen->fakeKeyDown(kKeyControl_L, KeyModifierControl,
+							   kSpacesSwipeSyntheticControlButton);
+	mutableScreen->fakeKeyDown(arrowKey, KeyModifierControl,
+							   kSpacesSwipeSyntheticArrowButton);
+	mutableScreen->fakeKeyUp(kSpacesSwipeSyntheticArrowButton);
+	mutableScreen->fakeKeyUp(kSpacesSwipeSyntheticControlButton);
+}
+
+void
+postSpacesSwipeShortcut(const OSXScreen* screen, bool moveRight,
+						const char* source, SInt32 xDelta, SInt32 yDelta,
+						double rawSignal, double accumulatedSignal)
+{
+	if (isSpacesSwipeDirectionInverted()) {
+		moveRight = !moveRight;
+	}
+
+	const KeyID arrowKey = moveRight ? kKeyRight : kKeyLeft;
+	char message[384];
+	snprintf(message, sizeof(message),
+		"pid=%d macOS Spaces swipe fallback [%s]: xDelta=%d yDelta=%d "
+		"rawSignal=%.6f accumulatedRaw=%.6f action=ctrl+%s "
+		"postPath=native-keypath",
+		static_cast<int>(getpid()), source, xDelta, yDelta,
+		rawSignal, accumulatedSignal,
+		moveRight ? "right" : "left");
+	LOG((CLOG_NOTE "%s", message));
+	appendSwipeTestDiagnosticLine(message);
+	postControlArrowShortcut(screen, arrowKey);
+}
+
+bool
+handleSyntheticSpacesSwipeFallback(const OSXScreen* screen, SInt32 xDelta,
+								   SInt32 yDelta)
+{
+	if (!isSpacesSwipeFallbackEnabled() ||
+		!OSXScreen::isSyntheticSpacesSwipeWheel(xDelta, yDelta)) {
+		return false;
+	}
+
+	postSpacesSwipeShortcut(screen, xDelta > 0, "target-synthetic", xDelta,
+							yDelta, 0.0, 0.0);
+	return true;
+}
+
+bool
+detectRemoteSpacesSwipeGesture(CGEventType type, CGEventRef event,
+							   bool isPrimary, bool isOnScreen,
+							   SInt32& syntheticXDelta)
+{
+	syntheticXDelta = 0;
+
+	if (type != static_cast<CGEventType>(NSEventTypeMagnify) ||
+		!isPrimary || isOnScreen ||
+		!isSpacesSwipeFallbackEnabled()) {
+		return false;
+	}
+
+	const double rawXSignal = CGEventGetDoubleValueField(
+		event, kMagicMouseSpacesSwipeRawXField);
+	SInt32 xDirection = 0;
+	if (!OSXScreen::updateSpacesSwipeSourceState(
+			g_spacesSwipeSourceState, rawXSignal,
+			getMonotonicMilliseconds(),
+			getSpacesSwipeSourceThreshold(),
+			getSpacesSwipeSourceWindowMs(),
+			getSpacesSwipeSourceCooldownMs(), xDirection)) {
+		return false;
+	}
+
+	syntheticXDelta = xDirection > 0 ? kSpacesSwipeSyntheticWheelDelta :
+									   -kSpacesSwipeSyntheticWheelDelta;
+	char message[384];
+	snprintf(message, sizeof(message),
+		"pid=%d macOS Spaces swipe source: rawField124=%.6f "
+		"syntheticWheel=(%d,%d)",
+		static_cast<int>(getpid()), rawXSignal,
+		syntheticXDelta, kSpacesSwipeSyntheticWheelSentinel);
+	LOG((CLOG_NOTE "%s", message));
+	appendSwipeTestDiagnosticLine(message);
+	return true;
+}
+
+} // namespace
 
 // TODO: upgrade deprecated function usage in these functions.
 void setZeroSuppressionInterval();
@@ -102,6 +667,8 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 	m_autoShowHideCursor(autoShowHideCursor),
 	m_events(events),
 	m_getDropTargetThread(NULL),
+	m_wakeHoldPid(-1),
+	m_wakeHoldExpiry(0),
 	m_impl(NULL)
 {
 	try {
@@ -177,8 +744,15 @@ OSXScreen::OSXScreen(IEventQueue* events, bool isPrimary, bool autoShowHideCurso
 							new TMethodEventJob<OSXScreen>(this,
 								&OSXScreen::handleSystemEvent));
 
-	// install the platform event queue
-	m_events->adoptBuffer(new OSXEventQueueBuffer(m_events));
+	// install the platform event queue.
+	// NOTE: use the thread-safe in-memory buffer instead of
+	// OSXEventQueueBuffer.  The latter relies on Carbon
+	// PostEventToQueue(), which dereferences an invalid handle when
+	// called from the CGEventTap and socket-multiplexer threads on
+	// modern macOS (SIGSEGV at offset 0x28), and a thread-local queue
+	// otherwise silently never delivers.  SimpleEventQueueBuffer is a
+	// mutex/condvar deque with no Carbon dependency.
+	m_events->adoptBuffer(new SimpleEventQueueBuffer());
 }
 
 OSXScreen::~OSXScreen()
@@ -242,6 +816,109 @@ OSXScreen::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
 	y = m_y;
 	w = m_w;
 	h = m_h;
+}
+
+namespace {
+
+// Resolve the preferred product name for \p displayID from the IOKit
+// IODisplayConnect registry, matched by the display's vendor and model
+// identifiers (the same identifiers CoreGraphics reports).  Returns an
+// empty string only when IOKit cannot provide a product name for the
+// display; the empty name is then carried as a valid length-zero DDNM
+// entry.
+std::string displayNameForID(CGDirectDisplayID displayID)
+{
+	const UInt32 vendorID = CGDisplayVendorNumber(displayID);
+	const UInt32 modelID  = CGDisplayModelNumber(displayID);
+
+	CFDictionaryRef matching = IOServiceMatching("IODisplayConnect");
+	if (matching == NULL) {
+		return std::string();
+	}
+
+	io_iterator_t iterator = 0;
+	if (IOServiceGetMatchingServices(kIOMasterPortDefault, matching,
+								 &iterator) != KERN_SUCCESS) {
+		return std::string();
+	}
+
+	std::string name;
+	io_service_t service;
+	while ((service = IOIteratorNext(iterator)) != 0) {
+		CFDictionaryRef info = IODisplayCreateInfoDictionary(service, 0);
+		if (info != NULL) {
+			UInt32 vendor = 0;
+			UInt32 model = 0;
+			CFNumberRef vendorRef = (CFNumberRef)CFDictionaryGetValue(info, kDisplayVendorID);
+			CFNumberRef modelRef  = (CFNumberRef)CFDictionaryGetValue(info, kDisplayProductID);
+			if (vendorRef != NULL && CFGetTypeID(vendorRef) == CFNumberGetTypeID()) {
+				CFNumberGetValue(vendorRef, kCFNumberSInt32Type, &vendor);
+			}
+			if (modelRef != NULL && CFGetTypeID(modelRef) == CFNumberGetTypeID()) {
+				CFNumberGetValue(modelRef, kCFNumberSInt32Type, &model);
+			}
+
+			if (vendor == vendorID && model == modelID) {
+				CFDictionaryRef productNames =
+					(CFDictionaryRef)CFDictionaryGetValue(info, kDisplayProductName);
+				if (productNames != NULL &&
+					CFGetTypeID(productNames) == CFDictionaryGetTypeID()) {
+					CFStringRef localized =
+						(CFStringRef)CFDictionaryGetValue(productNames, CFSTR("en_US"));
+					if (localized == NULL) {
+						localized = (CFStringRef)CFDictionaryGetValue(productNames, CFSTR("en"));
+					}
+					if (localized == NULL && CFDictionaryGetCount(productNames) > 0) {
+						// any available localization
+						CFStringRef firstKey[1];
+						CFDictionaryGetKeysAndValues(productNames,
+												 (const void**)firstKey, NULL);
+						localized = (CFStringRef)CFDictionaryGetValue(productNames, firstKey[0]);
+					}
+					if (localized != NULL &&
+						CFGetTypeID(localized) == CFStringGetTypeID()) {
+						name = [(__bridge NSString*)localized UTF8String];
+					}
+				}
+			}
+			CFRelease(info);
+		}
+		IOObjectRelease(service);
+		if (!name.empty()) {
+			break;
+		}
+	}
+	IOObjectRelease(iterator);
+	return name;
+}
+
+} // namespace
+
+void
+OSXScreen::getDisplays(std::vector<ScreenRect>& displays) const
+{
+	// read the snapshot captured during the last geometry refresh; the
+	// rectangles are ordered exactly like the names below
+	displays.clear();
+	displays.reserve(m_displays.size());
+	for (std::vector<DisplayEntry>::const_iterator it = m_displays.begin();
+		 it != m_displays.end(); ++it) {
+		displays.push_back(it->m_rect);
+	}
+}
+
+void
+OSXScreen::getDisplayNames(std::vector<std::string>& names) const
+{
+	// read the same snapshot as getDisplays(), so names always line up
+	// with the DDIS rectangles -- no independent display query, no
+	// count matching
+	names.clear();
+	names.reserve(m_displays.size());
+	for (std::vector<DisplayEntry>::const_iterator it = m_displays.begin();
+		 it != m_displays.end(); ++it) {
+		names.push_back(it->m_name);
+	}
 }
 
 void
@@ -669,6 +1346,19 @@ void
 OSXScreen::fakeMouseWheel(SInt32 xDelta, SInt32 yDelta) const
 {
 	if (xDelta != 0 || yDelta != 0) {
+		const SInt32 transportXDelta = xDelta;
+		const SInt32 transportYDelta = yDelta;
+
+		if (handleSyntheticSpacesSwipeFallback(this, transportXDelta,
+											   transportYDelta)) {
+			return;
+		}
+
+		// convert the transport convention into this host's local
+		// convention before injecting, so the perceived content
+		// direction matches the source host
+		normalizeScrollDeltas(getNaturalScrolling(), xDelta, yDelta);
+
 		// create a scroll event, post it and release it.  not sure if kCGScrollEventUnitLine
 		// is the right choice here over kCGScrollEventUnitPixel
 		CGEventRef scrollEvent = CGEventCreateScrollWheelEvent(
@@ -679,6 +1369,12 @@ OSXScreen::fakeMouseWheel(SInt32 xDelta, SInt32 yDelta) const
         // Fix for sticky keys
         CGEventFlags modifiers = m_keyState->getModifierStateAsOSXFlags();
         CGEventSetFlags(scrollEvent, modifiers);
+
+		logScrollDiagnosticsEvent("target-post", scrollEvent,
+								  m_isPrimary, m_isOnScreen, false,
+								  getNaturalScrolling(),
+								  xDelta, yDelta,
+								  transportXDelta, transportYDelta);
 
 		CGEventPost(kCGHIDEventTap, scrollEvent);
 		CFRelease(scrollEvent);
@@ -810,6 +1506,9 @@ OSXScreen::disable()
 	}
 	// FIXME -- allow system to enter power saving mode
 
+	// stop any wake hold so the display is free to sleep again
+	stopWakeHold();
+
 	// disable drag handling
 	m_dragNumButtonsDown = 0;
 	enableDragTimer(false);
@@ -836,17 +1535,9 @@ OSXScreen::enter()
 		// reset buttons
 		m_buttonState.reset();
 
-		// patch by Yutaka Tsutano
-		// wakes the client screen
-		// http://symless.com/spit/issues/details/3287#c12
-		io_registry_entry_t entry = IORegistryEntryFromPath(
-			kIOMasterPortDefault,
-			"IOService:/IOResources/IODisplayWrangler");
-
-		if (entry != MACH_PORT_NULL) {
-			IORegistryEntrySetCFProperty(entry, CFSTR("IORequestIdle"), kCFBooleanFalse);
-			IOObjectRelease(entry);
-		}
+		// wake the client display only when it is actually asleep; an
+		// awake target gets zero wake actions
+		wakeEnteredDisplay();
 
 		avoidSupression();
 	}
@@ -895,6 +1586,241 @@ OSXScreen::leave()
 	m_isOnScreen = false;
 
 	return true;
+}
+
+int
+OSXScreen::displayIndexAt(const std::vector<ScreenRect>& displays,
+                          SInt32 x, SInt32 y)
+{
+	for (std::size_t i = 0; i < displays.size(); ++i) {
+		const ScreenRect& rect = displays[i];
+		if (x >= rect.x && x < rect.x + rect.w &&
+			y >= rect.y && y < rect.y + rect.h) {
+			return static_cast<int>(i);
+		}
+	}
+	return -1;
+}
+
+bool
+OSXScreen::shouldRequestWake(bool displayAsleep, SInt32 now, SInt32 holdExpiry)
+{
+	if (!displayAsleep) {
+		return false;
+	}
+	// an active hold (now < holdExpiry) absorbs the entry as a refresh;
+	// a new child is only needed when none is running
+	return now >= holdExpiry;
+}
+
+SInt32
+OSXScreen::naturalScrollDirectionSign(bool naturalScrolling)
+{
+	return naturalScrolling ? -1 : 1;
+}
+
+void
+OSXScreen::normalizeScrollDeltas(bool naturalScrolling,
+								SInt32& xDelta, SInt32& yDelta)
+{
+	const SInt32 sign = naturalScrollDirectionSign(naturalScrolling);
+	xDelta *= sign;
+	yDelta *= sign;
+}
+
+bool
+OSXScreen::shouldForwardRemoteWheel(bool isPrimary, bool isOnScreen)
+{
+	return isPrimary && !isOnScreen;
+}
+
+bool
+OSXScreen::shouldEnableScrollDiagnostics(const char* value)
+{
+	if (value == NULL || value[0] == '\0') {
+		return false;
+	}
+
+	return strcmp(value, "0") != 0 &&
+		   strcmp(value, "false") != 0 &&
+		   strcmp(value, "FALSE") != 0 &&
+		   strcmp(value, "off") != 0 &&
+		   strcmp(value, "OFF") != 0 &&
+		   strcmp(value, "no") != 0 &&
+		   strcmp(value, "NO") != 0;
+}
+
+bool
+OSXScreen::shouldEnableSpacesSwipeFallback(const char* value)
+{
+	return shouldEnableScrollDiagnostics(value);
+}
+
+bool
+OSXScreen::isSyntheticSpacesSwipeWheel(SInt32 xDelta, SInt32 yDelta)
+{
+	return yDelta == kSpacesSwipeSyntheticWheelSentinel &&
+		   (xDelta == kSpacesSwipeSyntheticWheelDelta ||
+			xDelta == -kSpacesSwipeSyntheticWheelDelta);
+}
+
+bool
+OSXScreen::updateSpacesSwipeSourceState(SpacesSwipeSourceState& state,
+										double xSignal,
+										SInt64 nowTimeMs,
+										double threshold,
+										SInt32 windowMs,
+										SInt32 cooldownMs,
+										SInt32& xDirection)
+{
+	xDirection = 0;
+
+	if (threshold <= 0.0 || windowMs <= 0 || cooldownMs < 0) {
+		state = SpacesSwipeSourceState();
+		return false;
+	}
+
+	if (nowTimeMs < state.cooldownUntilTimeMs) {
+		return false;
+	}
+
+	if (fabs(xSignal) < 0.000001) {
+		return false;
+	}
+
+	const bool expired = state.lastEventTimeMs == 0 ||
+		nowTimeMs - state.lastEventTimeMs > windowMs;
+	const bool changedDirection = state.accumulatedXSignal != 0.0 &&
+		((state.accumulatedXSignal > 0.0) != (xSignal > 0.0));
+	if (expired || changedDirection) {
+		state.accumulatedXSignal = 0.0;
+	}
+
+	state.accumulatedXSignal += xSignal;
+	state.lastEventTimeMs = nowTimeMs;
+
+	if (fabs(state.accumulatedXSignal) < threshold) {
+		return false;
+	}
+
+	xDirection = state.accumulatedXSignal > 0.0 ? 1 : -1;
+	state.accumulatedXSignal = 0.0;
+	state.lastEventTimeMs = 0;
+	state.cooldownUntilTimeMs = nowTimeMs + cooldownMs;
+	return true;
+}
+
+void
+OSXScreen::wakeEnteredDisplay()
+{
+	// Client::enter() applies the received entry coordinate via
+	// fakeMouseMove() immediately before calling enter(), so the saved
+	// cursor position is the entry point; fall back to the live cursor
+	// if it was never recorded.
+	SInt32 x = m_xCursor;
+	SInt32 y = m_yCursor;
+	if (!m_cursorPosValid) {
+		getCursorPos(x, y);
+	}
+
+	// resolve the entry coordinate against the same ordered snapshot
+	// getDisplays() reports, so the target is the current physical
+	// display under the pointer
+	std::vector<ScreenRect> displays;
+	getDisplays(displays);
+	const int index = displayIndexAt(displays, x, y);
+	if (index < 0) {
+		LOG((CLOG_WARN "wake: entry %d,%d not on any display; "
+		     "skipping wake hold", x, y));
+		return;
+	}
+
+	const CGDirectDisplayID target = m_displays[index].m_id;
+	if (!CGDisplayIsAsleep(target)) {
+		LOG((CLOG_DEBUG1 "wake: target display %u is awake; no wake hold",
+		     target));
+		return;
+	}
+
+	// target is asleep: start one debounced short hold, or refresh the
+	// active hold instead of stacking a second caffeinate child
+	const SInt32 now = static_cast<SInt32>(time(NULL));
+	if (shouldRequestWake(true, now, m_wakeHoldExpiry)) {
+		startWakeHold(now);
+	} else {
+		refreshWakeHold(now);
+	}
+}
+
+void
+OSXScreen::startWakeHold(SInt32 now)
+{
+	if (m_wakeHoldPid > 0) {
+		// a hold is already active; refresh it, never stack a second
+		refreshWakeHold(now);
+		return;
+	}
+
+	char timeout[16];
+	snprintf(timeout, sizeof(timeout), "%d", kWakeHoldSeconds);
+	pid_t pid = 0;
+	char* const argv[] = {
+		const_cast<char*>(kWakeHoldPath),
+		const_cast<char*>("-u"),
+		const_cast<char*>("-d"),
+		const_cast<char*>("-t"),
+		timeout,
+		NULL
+	};
+	extern char** environ;
+	const int rc = posix_spawn(&pid, kWakeHoldPath, NULL, NULL, argv, environ);
+	if (rc != 0) {
+		LOG((CLOG_WARN "wake: failed to start %s: %s; pointer entry continues",
+		     kWakeHoldPath, strerror(rc)));
+		return;
+	}
+
+	m_wakeHoldPid = pid;
+	m_wakeHoldExpiry = now + kWakeHoldSeconds;
+	LOG((CLOG_DEBUG "wake: holding display awake via %s (pid %d, %ds)",
+	     kWakeHoldPath, static_cast<int>(pid), kWakeHoldSeconds));
+}
+
+void
+OSXScreen::refreshWakeHold(SInt32 now)
+{
+	// refresh instead of stacking: replace the active child so the 15s
+	// window restarts with exactly one caffeinate hold running
+	stopWakeHold();
+	startWakeHold(now);
+}
+
+void
+OSXScreen::stopWakeHold()
+{
+	if (m_wakeHoldPid <= 0) {
+		m_wakeHoldPid = -1;
+		m_wakeHoldExpiry = 0;
+		return;
+	}
+
+	// reap a child that already exited; the zombie holds the pid so it
+	// cannot be recycled into another process before we are done with it
+	int status = 0;
+	pid_t result = waitpid(m_wakeHoldPid, &status, WNOHANG);
+	if (result == 0) {
+		// still running: terminate it and reap promptly
+		kill(m_wakeHoldPid, SIGTERM);
+		for (int i = 0; i < 20; ++i) {
+			if (waitpid(m_wakeHoldPid, &status, WNOHANG) == m_wakeHoldPid) {
+				break;
+			}
+			usleep(10 * 1000); // 10ms, bounded to ~200ms
+		}
+	}
+
+	m_wakeHoldPid = -1;
+	m_wakeHoldExpiry = 0;
 }
 
 bool
@@ -1460,6 +2386,39 @@ OSXScreen::getScrollSpeed() const
 	return scaling;
 }
 
+bool
+OSXScreen::getNaturalScrolling() const
+{
+	// "Scroll direction: Natural" in Trackpad/Mouse settings; the value
+	// lives in the global preferences domain.  Missing, malformed, or
+	// unreadable values fall back to natural scrolling, which is the
+	// macOS default since Lion.
+	CFPropertyListRef pref = ::CFPreferencesCopyValue(
+							CFSTR("com.apple.swipescrolldirection"),
+							kCFPreferencesAnyApplication,
+							kCFPreferencesCurrentUser,
+							kCFPreferencesAnyHost);
+	bool natural = true;
+	if (pref != NULL) {
+		CFTypeID id = CFGetTypeID(pref);
+		if (id == CFBooleanGetTypeID()) {
+			natural = (CFBooleanGetValue(
+							static_cast<CFBooleanRef>(pref)) != 0);
+		}
+		else if (id == CFNumberGetTypeID()) {
+			// tolerate 0/1 stored as a number by third-party toggles
+			SInt32 value = 0;
+			if (CFNumberGetValue(static_cast<CFNumberRef>(pref),
+								 kCFNumberSInt32Type, &value)) {
+				natural = (value != 0);
+			}
+		}
+		CFRelease(pref);
+	}
+
+	return natural;
+}
+
 double
 OSXScreen::getScrollSpeedFactor() const
 {
@@ -1546,11 +2505,26 @@ OSXScreen::updateScreenShape()
 		return;
 	}
 
-	// get smallest rect enclosing all display rects
+	// get smallest rect enclosing all display rects, and capture each
+	// display's id, rectangle, and name in one ordered snapshot so the
+	// server can reason about non-rectangular (e.g. L-shaped) multi-monitor
+	// layouts and getDisplays()/getDisplayNames() always agree.  a topology
+	// change rebuilds the whole snapshot below; the two accessors never
+	// re-query the display list independently.
 	CGRect totalBounds = CGRectZero;
+	m_displays.clear();
 	for (CGDisplayCount i = 0; i < displayCount; ++i) {
 		CGRect bounds = CGDisplayBounds(displays[i]);
 		totalBounds   = CGRectUnion(totalBounds, bounds);
+
+		DisplayEntry entry;
+		entry.m_id   = displays[i];
+		entry.m_rect.x = (SInt32)bounds.origin.x;
+		entry.m_rect.y = (SInt32)bounds.origin.y;
+		entry.m_rect.w = (SInt32)bounds.size.width;
+		entry.m_rect.h = (SInt32)bounds.size.height;
+		entry.m_name = displayNameForID(displays[i]);
+		m_displays.push_back(entry);
 	}
 
 	// get shape of default screen
@@ -1943,10 +2917,36 @@ OSXScreen::handleCGInputEvent(CGEventTapProxy proxy,
 			return event;
 			break;
 		case kCGEventScrollWheel:
-			screen->onMouseWheel(screen->mapScrollWheelToBarrier(
-								 CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) / 65536.0f),
-								 screen->mapScrollWheelToBarrier(
-								 CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) / 65536.0f));
+			// relay only while the primary owns a remote target; wheel
+			// events captured while the cursor is on the primary itself
+			// pass through for the local system
+			{
+				const bool willForward = shouldForwardRemoteWheel(
+					screen->m_isPrimary, screen->m_isOnScreen);
+				const SInt32 localXDelta = screen->mapScrollWheelToBarrier(
+					CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) / 65536.0f);
+				const SInt32 localYDelta = screen->mapScrollWheelToBarrier(
+					CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) / 65536.0f);
+				SInt32 transportXDelta = localXDelta;
+				SInt32 transportYDelta = localYDelta;
+
+				// normalize the source host's local convention into the
+				// transport convention before relaying
+				screen->normalizeScrollDeltas(screen->getNaturalScrolling(),
+											  transportXDelta, transportYDelta);
+
+				logScrollDiagnosticsEvent("source-capture", event,
+										  screen->m_isPrimary,
+										  screen->m_isOnScreen,
+										  willForward,
+										  screen->getNaturalScrolling(),
+										  localXDelta, localYDelta,
+										  transportXDelta, transportYDelta);
+
+				if (willForward) {
+					screen->onMouseWheel(transportXDelta, transportYDelta);
+				}
+			}
 			break;
 		case kCGEventKeyDown:
 		case kCGEventKeyUp:
@@ -1963,19 +2963,39 @@ OSXScreen::handleCGInputEvent(CGEventTapProxy proxy,
 			break;
 		case NX_NULLEVENT:
 			break;
-		default:
-			if (type == NX_SYSDEFINED) {
-			if (isMediaKeyEvent (event)) {
-				LOG((CLOG_DEBUG2 "detected media key event"));
-				screen->onMediaKey (event);
-			} else {
-				LOG((CLOG_DEBUG2 "ignoring unknown system defined event"));
-				return event;
-			}
-			break;
+		default: {
+			SInt32 syntheticXDelta = 0;
+			if (detectRemoteSpacesSwipeGesture(type, event,
+											   screen->m_isPrimary,
+											   screen->m_isOnScreen,
+											   syntheticXDelta)) {
+				screen->onMouseWheel(syntheticXDelta,
+									 kSpacesSwipeSyntheticWheelSentinel);
+				break;
 			}
 
+			if (type == NX_SYSDEFINED) {
+				if (isMediaKeyEvent(event)) {
+					LOG((CLOG_DEBUG2 "detected media key event"));
+					screen->onMediaKey(event);
+				}
+				else {
+					logUnhandledInputDiagnosticsEvent("source-system-defined",
+													 type, event,
+													 screen->m_isPrimary,
+													 screen->m_isOnScreen);
+					LOG((CLOG_DEBUG2 "ignoring unknown system defined event"));
+					return event;
+				}
+				break;
+			}
+
+			logUnhandledInputDiagnosticsEvent("source-unhandled", type,
+											 event, screen->m_isPrimary,
+											 screen->m_isOnScreen);
 			LOG((CLOG_DEBUG3 "unknown quartz event type: 0x%02x", type));
+			break;
+		}
 	}
 
 	if (screen->m_isOnScreen) {

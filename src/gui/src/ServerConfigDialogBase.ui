@@ -792,4 +792,11 @@ Double click on a screen to edit its settings.</string>
    </hints>
   </connection>
  </connections>
+ <customwidgets>
+  <customwidget>
+   <class>FreeformServerConfigWidget</class>
+   <extends>QWidget</extends>
+   <header>FreeformServerConfigWidget.h</header>
+  </customwidget>
+ </customwidgets>
 </ui>

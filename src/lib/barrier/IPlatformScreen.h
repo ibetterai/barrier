@@ -150,6 +150,19 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const = 0;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const = 0;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const
+    {
+        SInt32 x, y, w, h;
+        getShape(x, y, w, h);
+        ScreenRect rect = { x, y, w, h };
+        displays.assign(1, rect);
+    }
+    virtual void        getDisplayNames(std::vector<std::string>& names) const
+    {
+        // platform does not expose display names; callers fall back to
+        // geometry-only behavior (no DDNM message)
+        names.clear();
+    }
     virtual void        getCursorPos(SInt32& x, SInt32& y) const = 0;
 
     // IPrimaryScreen overrides

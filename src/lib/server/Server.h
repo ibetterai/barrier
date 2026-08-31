@@ -42,6 +42,39 @@ class IEventQueue;
 class Thread;
 class ClientListener;
 
+namespace barrier {
+
+//! Owner of a physical display edge a cursor is crossing.
+enum class BoundaryOwner {
+    LocalOS,  //!< another display of the same screen owns the far side
+    Clamp,    //!< external edge without a cross-host link at the cursor
+    Remote    //!< a cross-host link covers the cursor's edge coordinate
+};
+
+//! Decide who owns the edge of \p sourceDisplay crossed at the cursor.
+/*!
+\p sourceDisplay is the physical display containing the cursor,
+\p direction the edge being crossed, \p activeDisplays every physical
+display of the active screen, \p edgeLinkIntervals the union-relative
+intervals of the active screen's configured cross-host links on
+\p direction, and (\p cursorX, \p cursorY) the cursor position in the
+same coordinate frame as \p activeDisplays.
+
+A boundary shared with another display of the same screen is LocalOS:
+the operating system moves the cursor natively, so Barrier must neither
+switch nor clamp.  For an external edge, only a link whose interval lies
+within this display's own edge span and contains the cursor's
+union-relative fraction makes it Remote; any other external coordinate
+clamps at the physical display edge.
+*/
+BoundaryOwner classifyDisplayBoundary(
+    const ScreenRect& sourceDisplay, EDirection direction,
+    const std::vector<ScreenRect>& activeDisplays,
+    const std::vector<Config::Interval>& edgeLinkIntervals,
+    SInt32 cursorX, SInt32 cursorY);
+
+} // namespace barrier
+
 //! Barrier server
 /*!
 This class implements the top-level server algorithms for barrier.

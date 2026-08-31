@@ -228,6 +228,9 @@ public:
     void                startDraggingFiles(DragFileList& fileList);
 
     void                setEnableDragDrop(bool enabled);
+
+    //! Set this screen's own name, for log messages only
+    void                setScreenName(const String& name) { m_screenName = name; }
     //@}
     //! @name accessors
     //@{
@@ -300,6 +303,8 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 
     IPlatformScreen*    getPlatformScreen() { return m_screen; }
@@ -342,6 +347,7 @@ private:
 
     bool                m_mock;
     bool                m_enableDragDrop;
+    String              m_screenName;
 };
 
 }

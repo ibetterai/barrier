@@ -20,6 +20,8 @@
 #include "Hotkey.h"
 #include "MainWindow.h"
 #include "AddClientDialog.h"
+#include "FreeformLayoutSettings.h"
+#include "barrier/DisplayGeometry.h"
 
 #include <QtCore>
 #include <QMessageBox>
@@ -64,6 +66,56 @@ ServerConfig::~ServerConfig()
     saveSettings();
 }
 
+void ServerConfig::setFreeformPosition(const QString& name, int x, int y)
+{
+    m_freeformPositions[name] = std::make_pair(x, y);
+}
+
+bool ServerConfig::getFreeformPosition(const QString& name, int& x, int& y) const
+{
+    std::map<QString, std::pair<int,int>>::const_iterator i = m_freeformPositions.find(name);
+    if (i == m_freeformPositions.end()) return false;
+    x = i->second.first;
+    y = i->second.second;
+    return true;
+}
+
+void ServerConfig::setFreeformDisplayRects(const QString& name, const QList<QRect>& rects)
+{
+    m_freeformDisplayRects[name] = rects;
+}
+
+bool ServerConfig::getFreeformDisplayRects(const QString& name, QList<QRect>& rects) const
+{
+    std::map<QString, QList<QRect>>::const_iterator i = m_freeformDisplayRects.find(name);
+    if (i == m_freeformDisplayRects.end()) return false;
+    rects = i->second;
+    return true;
+}
+
+void ServerConfig::setFreeformDisplayNames(const QString& name, const QStringList& names)
+{
+    m_freeformDisplayNames[name] = names;
+}
+
+bool ServerConfig::getFreeformDisplayNames(const QString& name, QStringList& names) const
+{
+    std::map<QString, QStringList>::const_iterator i = m_freeformDisplayNames.find(name);
+    if (i == m_freeformDisplayNames.end()) return false;
+    names = i->second;
+    return true;
+}
+
+bool ServerConfig::hasFreeformPositions() const
+{
+    return !m_freeformPositions.empty();
+}
+
+void ServerConfig::clearFreeformPositions()
+{
+    m_freeformPositions.clear();
+}
+
 bool ServerConfig::save(const QString& fileName) const
 {
     QFile file(fileName);
@@ -81,6 +133,7 @@ void ServerConfig::save(QFile& file) const
     QTextStream outStream(&file);
     outStream << *this;
 }
+
 
 void ServerConfig::init()
 {
@@ -105,6 +158,10 @@ void ServerConfig::saveSettings()
 
     settings().setValue("numColumns", numColumns());
     settings().setValue("numRows", numRows());
+
+    barrier::saveFreeformLayoutSettings(
+            settings(), m_freeformPositions, m_freeformDisplayRects,
+            m_freeformDisplayNames);
 
     settings().setValue("hasHeartbeat", hasHeartbeat());
     settings().setValue("heartbeat", heartbeat());
@@ -187,6 +244,10 @@ void ServerConfig::loadSettings()
     }
     settings().endArray();
 
+    barrier::loadFreeformLayoutSettings(
+            settings(), m_freeformPositions, m_freeformDisplayRects,
+            m_freeformDisplayNames);
+
     settings().endGroup();
 }
 
@@ -230,18 +291,108 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
 
     outStream << "section: links" << endl;
 
-    for (int i = 0; i < config.screens().size(); i++)
-        if (!config.screens()[i].isNull())
-        {
-            outStream << "\t" << config.screens()[i].name() << ":" << endl;
+    // Two display edges that are merely close (a few pixels of drag
+    // imprecision, not a deliberate exact match) are still treated as
+    // touching, so link generation isn't fragile to sub-pixel misalignment
+    // in the freeform canvas.
+    static const int kFreeformAdjacencyTolerancePx = 15;
+    if (config.hasFreeformPositions()) {
+        // Freeform layout: generate partial-interval links from the shared
+        // display geometry primitives.  Individual physical displays decide
+        // which edges touch; the emitted intervals are normalized against
+        // each screen's full display union, so L-shape / notch adjacencies
+        // keep partial edges without per-rectangle fraction math.
+        QMap<QString, std::vector<ScreenRect> > displayRects;
+        QMap<QString, barrier::ScreenOrigin> origins;
+        QStringList screenNames;
+        for (int i = 0; i < config.screens().size(); i++) {
+            const Screen& s = config.screens()[i];
+            if (s.isNull()) continue;
+            screenNames << s.name();
+            int px = 0, py = 0;
+            config.getFreeformPosition(s.name(), px, py);
+            origins[s.name()] = barrier::ScreenOrigin{px, py};
+            QList<QRect> stored;
+            std::vector<ScreenRect> rects;
+            if (config.getFreeformDisplayRects(s.name(), stored) && !stored.isEmpty()) {
+                for (int r = 0; r < stored.size(); r++) {
+                    const QRect& qr = stored[r];
+                    rects.push_back(ScreenRect{qr.x(), qr.y(), qr.width(), qr.height()});
+                }
+            } else {
+                rects.push_back(ScreenRect{0, 0, 1920, 1080});
+            }
+            displayRects[s.name()] = rects;
+        }
 
-            for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
-            {
-                int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
-                if (idx != -1 && !config.screens()[idx].isNull())
-                    outStream << "\t\t" << neighbourDirs[j].name << " = " << config.screens()[idx].name() << endl;
+        // Serialize an interval as config percentages.  qRound can
+        // collapse a narrow positive interval to equal endpoints, which
+        // the config parser would reject; widen the upper endpoint so
+        // the emitted interval stays non-empty.  Returns false when the
+        // interval cannot be represented (start already at 100).
+        auto intervalText = [](float first, float second, QString& text) {
+            int start = qRound(first * 100.0f);
+            int end = qRound(second * 100.0f);
+            if (end <= start) {
+                if (start >= 100) {
+                    return false;
+                }
+                end = start + 1;
+            }
+            text = QString("%1,%2").arg(start).arg(end);
+            return true;
+        };
+
+        for (const QString& name : screenNames) {
+            outStream << "\t" << name << ":" << endl;
+            // each ordered cross-screen pair is derived once per direction;
+            // the primitives dedupe identical links within a pair
+            for (const QString& oth : screenNames) {
+                if (oth == name) continue;
+                const std::vector<barrier::DisplayLink> links = barrier::deriveDisplayLinks(
+                    name.toStdString(), displayRects.value(name),
+                    origins.value(name), oth.toStdString(),
+                    displayRects.value(oth), origins.value(oth),
+                    kFreeformAdjacencyTolerancePx);
+                for (std::vector<barrier::DisplayLink>::const_iterator it = links.begin();
+                     it != links.end(); ++it) {
+                    QString sourceInterval;
+                    QString targetInterval;
+                    if (!intervalText(it->sourceInterval.first, it->sourceInterval.second, sourceInterval) ||
+                        !intervalText(it->targetInterval.first, it->targetInterval.second, targetInterval)) {
+                        // Narrower than the config format can express;
+                        // skip rather than emit invalid (100,100) syntax.
+                        continue;
+                    }
+                    const char* dir;
+                    switch (it->sourceSide) {
+                        case kLeft:   dir = "left";  break;
+                        case kRight:  dir = "right"; break;
+                        case kTop:    dir = "up";    break;
+                        case kBottom: dir = "down";  break;
+                        default:      dir = "";      break;
+                    }
+                    outStream << "\t\t" << dir << "(" << sourceInterval
+                              << ") = " << oth << "(" << targetInterval << ")" << endl;
+                }
             }
         }
+    }
+    else {
+        // Grid layout links (backward compatible)
+        for (int i = 0; i < config.screens().size(); i++)
+            if (!config.screens()[i].isNull())
+            {
+                outStream << "\t" << config.screens()[i].name() << ":" << endl;
+
+                for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
+                {
+                    int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
+                    if (idx != -1 && !config.screens()[idx].isNull())
+                        outStream << "\t\t" << neighbourDirs[j].name << " = " << config.screens()[idx].name() << endl;
+                }
+            }
+    }
 
     outStream << "end" << endl << endl;
 

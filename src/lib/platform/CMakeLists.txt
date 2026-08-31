@@ -20,6 +20,16 @@ if (WIN32)
 elseif (APPLE)
     file(GLOB headers "OSX*.h" "IOSX*.h")
     file(GLOB sources "OSX*.cpp" "IOSX*.cpp" "OSX*.m" "OSX*.mm")
+    # OSXMediaKeySimulator was renamed to OSXMediaKeySupport (#3305); the
+    # stale copy still defines convertKeyIDToNXKeyType()/fakeNativeMediaKey()
+    # and breaks any link that pulls both objects (e.g. the unit tests).
+    # OSXMediaKeySupport is the implementation production uses, so the dead
+    # duplicate is dropped from the build; the source file stays on disk.
+    # GLOB results may be absolute (CMP0003 NEW) or relative, so both
+    # spellings are removed.
+    list(REMOVE_ITEM sources
+        "${CMAKE_CURRENT_SOURCE_DIR}/OSXMediaKeySimulator.mm"
+        "OSXMediaKeySimulator.mm")
 elseif (UNIX)
     file(GLOB headers "XWindows*.h")
     file(GLOB sources "XWindows*.cpp")

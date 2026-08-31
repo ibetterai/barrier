@@ -9,12 +9,14 @@ set (CMAKE_INCLUDE_CURRENT_DIR ON)
 # files that are used both in tests and the app
 set(GUI_COMMON_SOURCE_FILES
     src/Action.cpp
+    src/FreeformLayoutSettings.cpp
     src/Hotkey.cpp
     src/KeySequence.cpp
 )
 
 set(GUI_COMMON_HEADER_FILES
     src/Action.h
+    src/FreeformLayoutSettings.h
     src/Hotkey.h
     src/KeySequence.h
 )
@@ -57,7 +59,13 @@ set(GUI_SOURCE_FILES
     src/ZeroconfServer.cpp
     src/ZeroconfService.cpp
     src/ZeroconfThread.cpp
+    src/FreeformServerConfigWidget.cpp
+    src/FreeformServerConfigWidget.h
 )
+
+if (APPLE)
+    list(APPEND GUI_SOURCE_FILES src/MacWindowActivation.mm)
+endif()
 
 set(GUI_HEADER_FILES
     src/AboutDialog.h
@@ -92,6 +100,7 @@ set(GUI_HEADER_FILES
     src/ShutdownCh.h
     src/SslCertificate.h
     src/TrashScreenWidget.h
+    src/TrayIconActivation.h
     src/VersionChecker.h
     src/ZeroconfBrowser.h
     src/ZeroconfRecord.h
@@ -131,7 +140,7 @@ add_executable (barrier WIN32
 
 include_directories (./src)
 
-target_link_libraries(barrier net base io Qt5::Core Qt5::Widgets Qt5::Network ${OPENSSL_LIBS})
+target_link_libraries(barrier net base io synlib Qt5::Core Qt5::Widgets Qt5::Network ${OPENSSL_LIBS})
 target_compile_definitions (barrier PRIVATE -DBARRIER_VERSION_STAGE="${BARRIER_VERSION_STAGE}")
 target_compile_definitions (barrier PRIVATE -DBARRIER_REVISION="${BARRIER_REVISION}")
 
@@ -144,7 +153,9 @@ if (WIN32)
     target_link_libraries (barrier ${DNSSD_LIB})
 elseif (APPLE)
     find_library(APPSERVICES_LIB ApplicationServices)
-    target_link_libraries(barrier ${APPSERVICES_LIB})
+    find_library(APPKIT_LIB AppKit)
+    find_library(IOKIT_LIB IOKit)
+    target_link_libraries(barrier ${APPSERVICES_LIB} ${APPKIT_LIB} ${IOKIT_LIB})
 else()
     target_link_libraries (barrier dns_sd)
 endif()
@@ -163,9 +174,14 @@ endif()
 
 if (BARRIER_BUILD_TESTS)
     set(GUI_TEST_SOURCE_FILES
+        test/FreeformServerConfigWidgetTests.cpp
         test/KeySequenceTests.cpp
+        test/ServerConfigPersistenceTests.cpp
+        test/TrayIconActivationTests.cpp
         test/HotkeyTests.cpp
         test/main.cpp
+        src/FreeformServerConfigWidget.cpp
+        src/FreeformServerConfigWidget.h
     )
 
     add_executable(guiunittests
@@ -178,4 +194,7 @@ if (BARRIER_BUILD_TESTS)
 
     target_include_directories(guiunittests PUBLIC ../../ext)
     target_link_libraries(guiunittests gtest gmock Qt5::Core Qt5::Widgets Qt5::Network ${libs})
+    if (APPLE)
+        target_link_libraries(guiunittests ${APPSERVICES_LIB} ${APPKIT_LIB} ${IOKIT_LIB})
+    endif()
 endif()

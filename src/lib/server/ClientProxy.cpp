@@ -29,7 +29,8 @@
 
 ClientProxy::ClientProxy(const std::string& name, barrier::IStream* stream) :
     BaseClientProxy(name),
-    m_stream(stream)
+    m_stream(stream),
+    m_peerMinorVersion(0)
 {
 }
 
@@ -58,4 +59,16 @@ void*
 ClientProxy::getEventTarget() const
 {
     return static_cast<IScreen*>(const_cast<ClientProxy*>(this));
+}
+
+void
+ClientProxy::setPeerMinorVersion(SInt16 minor)
+{
+    m_peerMinorVersion = minor;
+}
+
+SInt16
+ClientProxy::getPeerMinorVersion() const
+{
+    return m_peerMinorVersion;
 }

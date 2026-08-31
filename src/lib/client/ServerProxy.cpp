@@ -23,6 +23,7 @@
 #include "barrier/ClipboardChunk.h"
 #include "barrier/StreamChunker.h"
 #include "barrier/Clipboard.h"
+#include "barrier/DisplayNames.h"
 #include "barrier/ProtocolUtil.h"
 #include "barrier/option_types.h"
 #include "barrier/protocol_types.h"
@@ -860,7 +861,37 @@ ServerProxy::queryInfo()
     ClientInfo info;
     m_client->getShape(info.m_x, info.m_y, info.m_w, info.m_h);
     m_client->getCursorPos(info.m_mx, info.m_my);
+    m_client->getDisplays(info.m_displays);
+    m_client->getDisplayNames(info.m_displayNames);
     sendInfo(info);
+
+    // send per-display geometry when the platform reports it (non-rectangular
+    // multi-monitor layouts).  absence lets older servers fall back to the
+    // bounding box in ClientInfo.
+    if (!info.m_displays.empty()) {
+        std::vector<UInt32> data;
+        data.reserve(info.m_displays.size() * 4);
+        for (const ScreenRect& r : info.m_displays) {
+            data.push_back((UInt32)r.x);
+            data.push_back((UInt32)r.y);
+            data.push_back((UInt32)r.w);
+            data.push_back((UInt32)r.h);
+        }
+        ProtocolUtil::writef(m_stream, kMsgDDisplayInfo, &data);
+    }
+
+    // send per-display names right after the geometry, only when the server
+    // negotiated protocol 1.7.  the payload count must match the DDIS
+    // rectangle count; older peers keep geometry-only behavior.
+    if (m_client->supportsDisplayNames() &&
+        !info.m_displayNames.empty() &&
+        info.m_displayNames.size() == info.m_displays.size()) {
+        std::vector<UInt32> data = barrier::encodeDisplayNames(
+            info.m_displayNames, info.m_displays.size());
+        if (!data.empty()) {
+            ProtocolUtil::writef(m_stream, kMsgDDisplayNames, &data);
+        }
+    }
 }
 
 void

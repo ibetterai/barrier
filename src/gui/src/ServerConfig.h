@@ -21,6 +21,7 @@
 #define SERVERCONFIG__H
 
 #include <QList>
+#include <QStringList>
 
 #include "Screen.h"
 #include "BaseConfig.h"
@@ -47,6 +48,20 @@ class ServerConfig : public BaseConfig
         const std::vector<Screen>& screens() const { return m_Screens; }
         int numColumns() const { return m_NumColumns; }
         int numRows() const { return m_NumRows; }
+        // Freeform accessors
+        void setFreeformPosition(const QString& name, int x, int y);
+        bool getFreeformPosition(const QString& name, int& x, int& y) const;
+        void setFreeformDisplayRects(const QString& name, const QList<QRect>& rects);
+        bool getFreeformDisplayRects(const QString& name, QList<QRect>& rects) const;
+        // Per-display product names for a screen, ordered identically to
+        // the rects stored by setFreeformDisplayRects(). Populated from
+        // the daemon's ClientProxy DDNM metadata (MainWindow parses the
+        // log line into these); empty entries fall back to
+        // "<screen name> #<index>" labels in the canvas.
+        void setFreeformDisplayNames(const QString& name, const QStringList& names);
+        bool getFreeformDisplayNames(const QString& name, QStringList& names) const;
+        bool hasFreeformPositions() const;
+        void clearFreeformPositions();
         bool hasHeartbeat() const { return m_HasHeartbeat; }
         int heartbeat() const { return m_Heartbeat; }
         bool relativeMouseMoves() const { return m_RelativeMouseMoves; }
@@ -109,6 +124,14 @@ class ServerConfig : public BaseConfig
         std::vector<Screen> m_Screens;
         int m_NumColumns;
         int m_NumRows;
+        // Freeform layout: when m_freeformPositions is non-empty the grid
+        // (m_NumColumns/m_NumRows) is ignored.  Positions are global layout
+        // coordinates for each screen's bounding-box origin, and
+        // m_freeformDisplayRects are the screen's display rects in
+        // screen-local coordinates (main display at 0,0).
+        std::map<QString, std::pair<int,int>> m_freeformPositions;
+        std::map<QString, QList<QRect>> m_freeformDisplayRects;
+        std::map<QString, QStringList> m_freeformDisplayNames;
         bool m_HasHeartbeat;
         int m_Heartbeat;
         bool m_RelativeMouseMoves;

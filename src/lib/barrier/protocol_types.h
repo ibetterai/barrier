@@ -21,7 +21,8 @@
 #include "base/EventTypes.h"
 
 #include <cstdint>
-
+#include <string>
+#include <vector>
 // protocol version number
 // 1.0:  initial protocol
 // 1.1:  adds KeyCode to key press, release, and repeat
@@ -31,9 +32,10 @@
 // 1.4:  adds crypto support
 // 1.5:  adds file transfer and removes home brew crypto
 // 1.6:  adds clipboard streaming
+// 1.7:  adds per-display display names (DDNM), capability-gated
 // NOTE: with new version, barrier minor version should increment
 static const SInt16        kProtocolMajorVersion = 1;
-static const SInt16        kProtocolMinorVersion = 6;
+static const SInt16        kProtocolMinorVersion = 7;
 
 // default contact port number
 static const UInt16        kDefaultPort = 24800;
@@ -263,6 +265,26 @@ extern const char*        kMsgDClipboard;
 // the new screen area.
 extern const char*        kMsgDInfo;
 
+// display geometry:  secondary -> primary
+// sent after kMsgDInfo by clients that expose per-display rectangles
+// (an L-shaped or otherwise non-rectangular multi-monitor layout).
+// payload is one %4I vector: [count, x0, y0, w0, h0, x1, y1, w1, h1, ...].
+// absence of this message means the client is a single bounding-box screen.
+extern const char*        kMsgDDisplayInfo;
+
+// display names:  secondary -> primary
+// sent immediately after kMsgDDisplayInfo by clients that negotiated
+// protocol 1.7 (DDNM is never sent to peers below 1.7).
+// payload is one %4I vector:
+//   [displayCount, length0, byte0_0, ..., byte0_{length0-1},
+//    length1, byte1_0, ..., lengthN-1, byteN-1_0, ...]
+// where displayCount equals the rectangle count of the preceding DDIS
+// message and each display's UTF-8 name bytes follow its byte length
+// (each byte as a UInt32).  a length of zero is a valid entry meaning
+// the display has no product name.  names are in the same order as the
+// DDIS rectangles.
+extern const char*        kMsgDDisplayNames;
+
 // set options:  primary -> secondary
 // client should set the given option/value pairs.  $1 = option/value
 // pairs.
@@ -315,6 +337,11 @@ extern const char*        kMsgEBad;
 // structures
 //
 
+//! A single display rectangle, in screen-global coordinates.
+struct ScreenRect {
+    SInt32 x, y, w, h;
+};
+
 //! Screen information
 /*!
 This class contains information about a screen.
@@ -342,4 +369,12 @@ public:
     The current location of the mouse cursor.
     */
     SInt32                m_mx, m_my;
+
+    //! Per-display rectangles, in screen-global coordinates.
+    //! Empty for single-display screens (fall back to m_x,m_y,m_w,m_h).
+    std::vector<ScreenRect>    m_displays;
+
+    //! Per-display names, ordered identically to m_displays.
+    //! Empty when the peer did not send display names.
+    std::vector<std::string>    m_displayNames;
 };

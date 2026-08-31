@@ -23,6 +23,7 @@
 
 #include <QtCore>
 #include <QtGui>
+#include <QApplication>
 #include <QMessageBox>
 
 ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, const QString& defaultScreenName) :
@@ -31,7 +32,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     m_OrigServerConfig(config),
     m_ServerConfig(config),
     m_ScreenSetupModel(serverConfig().screens(), serverConfig().numColumns(), serverConfig().numRows()),
-    m_Message("")
+    m_Message(""),
+    m_LocalScreenName(defaultScreenName)
 {
     setupUi(this);
 
@@ -66,13 +68,98 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
 
     m_pScreenSetupView->setModel(&m_ScreenSetupModel);
 
+    // Create the freeform canvas that shows the real L-shaped display
+    // layout and lets the client's display be dragged into the notch.
+    m_pFreeformWidget = new FreeformServerConfigWidget(this);
+    // Insert the freeform canvas right below the grid view
+    QVBoxLayout* tabLayout = qobject_cast<QVBoxLayout*>(m_pTabScreens->layout());
+    if (tabLayout) {
+        // The grid view is the second item in the tab's layout (after the hbox with trash)
+        // Insert the freeform widget after it
+        tabLayout->insertWidget(2, m_pFreeformWidget);
+    }
+    m_pFreeformWidget->setServerScreenName(m_LocalScreenName);
+    m_pFreeformWidget->syncFromSystemDisplays();
+        // Seed client rects from the first screen that isn't this machine
+        // (the server). Comparing against m_LocalScreenName -- not
+        // "screens()[0]" -- because grid slot 0 is often an empty/unrelated
+        // cell, not actually the server's own screen.
+        QString clientName;
+        for (const Screen& s : serverConfig().screens()) {
+            if (!s.isNull() && s.name().compare(m_LocalScreenName, Qt::CaseInsensitive) != 0) {
+                clientName = s.name();
+                break;
+            }
+        }
+        if (!clientName.isEmpty()) {
+            // Client display names (ordered per-display product names from
+            // the client's DDNM metadata) reach the dialog through
+            // ServerConfig: the daemon's ClientProxy1_0 logs them and
+            // MainWindow parses them into the config. Empty/absent names
+            // keep the canvas "<client screen name> #<index>" fallbacks.
+            QList<QRect> existing;
+            if (serverConfig().getFreeformDisplayRects(clientName, existing) && !existing.isEmpty()) {
+                m_pFreeformWidget->setClientDisplays(clientName, existing);
+            } else {
+                // Default single display for the client
+                QList<QRect> def;
+                def.append(QRect(0, 0, 1920, 1080));
+                m_pFreeformWidget->setClientDisplays(clientName, def);
+            }
+            QStringList clientNames;
+            if (serverConfig().getFreeformDisplayNames(clientName, clientNames)) {
+                m_pFreeformWidget->setClientDisplayNames(clientNames);
+            }
+            int fx = 0, fy = 0;
+            if (serverConfig().getFreeformPosition(clientName, fx, fy)) {
+                m_pFreeformWidget->setClientPosition(QPoint(fx, fy));
+            }
+        }
+        connect(m_pFreeformWidget, &FreeformServerConfigWidget::clientPositionChanged,
+                this, [this](const QPoint& pos) {
+                    // Persist freeform position for the client screen
+                    QString cname;
+                    for (const Screen& s : serverConfig().screens()) {
+                        if (!s.isNull() && s.name().compare(m_LocalScreenName, Qt::CaseInsensitive) != 0) {
+                            cname = s.name();
+                            break;
+                        }
+                    }
+                    if (!cname.isEmpty()) {
+                        serverConfig().setFreeformPosition(cname, pos.x(), pos.y());
+                    }
+                });
+
+    // QTabWidget otherwise sizes itself (and the whole dialog) to fit the
+    // TALLEST page. The freeform canvas makes "Screens and links" far
+    // taller than "Hotkeys"/"Advanced server settings", which then show a
+    // large empty gap on the right/bottom when selected. Make only the
+    // current page contribute to the size, so switching tabs resizes the
+    // dialog to fit whichever page is actually showing.
+    connect(m_pTabWidget, &QTabWidget::currentChanged, this, [this](int index) {
+        for (int i = 0; i < m_pTabWidget->count(); ++i) {
+            QWidget* page = m_pTabWidget->widget(i);
+            const bool current = (i == index);
+            page->setSizePolicy(current ? QSizePolicy::Preferred : QSizePolicy::Ignored,
+                                 current ? QSizePolicy::Preferred : QSizePolicy::Ignored);
+        }
+        QWidget* current = m_pTabWidget->widget(index);
+        current->resize(current->minimumSizeHint());
+        m_pTabWidget->resize(m_pTabWidget->minimumSizeHint());
+        adjustSize();
+    });
+
     if (serverConfig().numScreens() == 0)
         model().screen(serverConfig().numColumns() / 2, serverConfig().numRows() / 2) = Screen(defaultScreenName);
 }
 
 void ServerConfigDialog::showEvent(QShowEvent* event)
 {
-    QDialog::show();
+    QDialog::showEvent(event);
+
+    if (m_pFreeformWidget) {
+        m_pFreeformWidget->syncFromSystemDisplays();
+    }
 
     if (!m_Message.isEmpty())
     {
@@ -86,6 +173,38 @@ void ServerConfigDialog::accept()
     serverConfig().haveHeartbeat(m_pCheckBoxHeartbeat->isChecked());
     serverConfig().setHeartbeat(m_pSpinBoxHeartbeat->value());
 
+    // Persist the freeform canvas geometry so the generated config can
+    // produce per-display partial edges for the L-shape / notch layout.
+    if (m_pFreeformWidget) {
+        // Server at origin with its real display rects (global CG coords).
+        // Use m_LocalScreenName (this machine's own name), not "first
+        // non-null screen" -- grid slot order has no relation to which
+        // screen is actually the server, and saving under the wrong name
+        // clobbers the client's entry while leaving the server with no
+        // freeform geometry at all (link generation then falls back to a
+        // generic default rect for it, breaking every adjacency).
+        const QString& sname = m_LocalScreenName;
+        if (!sname.isEmpty()) {
+            serverConfig().setFreeformDisplayRects(sname, m_pFreeformWidget->serverDisplays());
+            serverConfig().setFreeformPosition(sname, 0, 0);
+        }
+        // Client with its dragged position and display rects
+        QString cname = m_pFreeformWidget->clientName();
+        if (cname.isEmpty()) {
+            for (const Screen& s : serverConfig().screens()) {
+                if (!s.isNull() && s.name().compare(sname, Qt::CaseInsensitive) != 0) {
+                    cname = s.name();
+                    break;
+                }
+            }
+        }
+        if (!cname.isEmpty()) {
+            serverConfig().setFreeformDisplayRects(cname, m_pFreeformWidget->clientDisplays());
+            serverConfig().setFreeformDisplayNames(cname, m_pFreeformWidget->clientDisplayNames());
+            QPoint pos = m_pFreeformWidget->clientPosition();
+            serverConfig().setFreeformPosition(cname, pos.x(), pos.y());
+        }
+    }
     serverConfig().setRelativeMouseMoves(m_pCheckBoxRelativeMouseMoves->isChecked());
     serverConfig().setScreenSaverSync(m_pCheckBoxScreenSaverSync->isChecked());
     serverConfig().setWin32KeepForeground(m_pCheckBoxWin32KeepForeground->isChecked());

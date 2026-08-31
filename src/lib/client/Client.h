@@ -119,6 +119,13 @@ public:
     */
     NetworkAddress        getServerAddress() const;
 
+    //! Test if the server negotiated protocol 1.7
+    /*!
+    True when the server's hello announced a minor version of at least
+    1.7, i.e. the server understands the DDNM display-names message.
+    */
+    bool                supportsDisplayNames() const;
+
     //! Return true if received file size is valid
     bool                isReceivedFileSizeValid();
 
@@ -138,6 +145,8 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 
     // IClient overrides
@@ -200,6 +209,7 @@ public:
 private:
     std::string                m_name;
     NetworkAddress        m_serverAddress;
+    SInt16                m_serverMinorVersion;
     ISocketFactory*        m_socketFactory;
     barrier::Screen*    m_screen;
     barrier::IStream*    m_stream;

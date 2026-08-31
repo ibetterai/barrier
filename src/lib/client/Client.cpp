@@ -17,6 +17,8 @@
  */
 
 #include "client/Client.h"
+#include "barrier/DisplayNames.h"
+#include "barrier/DisplayGeometry.h"
 
 #include "client/ServerProxy.h"
 #include "barrier/Screen.h"
@@ -55,6 +57,7 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_mock(false),
     m_name(name),
     m_serverAddress(address),
+    m_serverMinorVersion(0),
     m_socketFactory(socketFactory),
     m_screen(screen),
     m_stream(NULL),
@@ -235,6 +238,24 @@ Client::getShape(SInt32& x, SInt32& y, SInt32& w, SInt32& h) const
 }
 
 void
+Client::getDisplays(std::vector<ScreenRect>& displays) const
+{
+    m_screen->getDisplays(displays);
+}
+
+void
+Client::getDisplayNames(std::vector<std::string>& names) const
+{
+    m_screen->getDisplayNames(names);
+}
+
+bool
+Client::supportsDisplayNames() const
+{
+    return barrier::supportsDisplayNames(m_serverMinorVersion);
+}
+
+void
 Client::getCursorPos(SInt32& x, SInt32& y) const
 {
     m_screen->getCursorPos(x, y);
@@ -247,6 +268,16 @@ Client::enter(SInt32 xAbs, SInt32 yAbs, UInt32, KeyModifierMask mask, bool)
     m_screen->mouseMove(xAbs, yAbs);
     m_screen->enter(mask);
 
+    // log the physical display the server selected for this entry
+    std::vector<ScreenRect> displays;
+    std::vector<std::string> names;
+    m_screen->getDisplays(displays);
+    m_screen->getDisplayNames(names);
+    LOG((CLOG_INFO "entered screen \"%s\"%s at %d,%d", m_name.c_str(),
+         barrier::displayLabelSuffix(
+             barrier::displayLabelAt(displays, names, xAbs, yAbs)).c_str(),
+         xAbs, yAbs));
+
     if (m_sendFileThread != NULL) {
         StreamChunker::interruptFile();
         m_sendFileThread = NULL;
@@ -256,9 +287,23 @@ Client::enter(SInt32 xAbs, SInt32 yAbs, UInt32, KeyModifierMask mask, bool)
 bool
 Client::leave()
 {
+    // the cursor is still on this screen when the leave arrives; resolve
+    // the display being left before the platform screen acts on it
+    SInt32 x, y;
+    m_screen->getCursorPos(x, y);
+    std::vector<ScreenRect> displays;
+    std::vector<std::string> names;
+    m_screen->getDisplays(displays);
+    m_screen->getDisplayNames(names);
+
     m_active = false;
 
     m_screen->leave();
+
+    LOG((CLOG_INFO "left screen \"%s\"%s at %d,%d", m_name.c_str(),
+         barrier::displayLabelSuffix(
+             barrier::displayLabelAt(displays, names, x, y)).c_str(),
+         x, y));
 
     if (m_enableClipboard) {
         // send clipboards that we own and that have changed
@@ -693,21 +738,29 @@ Client::handleHello(const Event&, void*)
         return;
     }
 
-    // check versions
+    // check versions: the client interoperates with any server down to
+    // protocol 1.6.  a 1.6 server must keep working (geometry-only) instead
+    // of being rejected just because we now speak 1.7.
     LOG((CLOG_DEBUG1 "got hello version %d.%d", major, minor));
     if (major < kProtocolMajorVersion ||
-        (major == kProtocolMajorVersion && minor < kProtocolMinorVersion)) {
+        (major == kProtocolMajorVersion && minor < 6)) {
         sendConnectionFailedEvent(XIncompatibleClient(major, minor).what());
         cleanupTimer();
         cleanupConnection();
         return;
     }
 
+    // remember the server's capability and announce the highest version
+    // both sides support, so an older server never sees an unknown minor
+    // in the hello reply (which would make it reject the connection).
+    m_serverMinorVersion = minor;
+    const SInt16 announceMinor = barrier::negotiatedMinorVersion(minor);
+
     // say hello back
-    LOG((CLOG_DEBUG1 "say hello version %d.%d", kProtocolMajorVersion, kProtocolMinorVersion));
+    LOG((CLOG_DEBUG1 "say hello version %d.%d", kProtocolMajorVersion, announceMinor));
     ProtocolUtil::writef(m_stream, kMsgHelloBack,
                             kProtocolMajorVersion,
-                            kProtocolMinorVersion, &m_name);
+                            announceMinor, &m_name);
 
     // now connected but waiting to complete handshake
     setupScreen();

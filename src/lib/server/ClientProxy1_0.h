@@ -36,6 +36,8 @@ public:
     virtual bool        getClipboard(ClipboardID id, IClipboard*) const;
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
+    virtual void        getDisplays(std::vector<ScreenRect>& displays) const;
+    virtual void        getDisplayNames(std::vector<std::string>& names) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
 
     // IClient overrides
@@ -81,6 +83,8 @@ private:
     void                handleFlatline(const Event&, void*);
 
     bool                recvInfo();
+    bool                recvDisplayInfo();
+    bool                recvDisplayNames();
     bool                recvGrabClipboard();
 
 protected:
