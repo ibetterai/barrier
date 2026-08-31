@@ -32,7 +32,10 @@ link_local_ipv6="fe80""::beef"
 synthetic_url="https""://example.invalid/build?trace=1"
 credential_name="GH_""TOKEN"
 authorization_name="Authori""zation"
+api_key_name="API_""KEY"
 synthetic_value="synthetic""-credential-value"
+short_synthetic_value="short""-value"
+spaced_home_path="/""Users""/synthetic user/private source.cpp"
 pem_begin="-----BE""GIN PRIVATE KEY-----"
 pem_body="c3ludGhldGljLWtleS1ib2R5LXZhbHVl"
 pem_end="-----E""ND PRIVATE KEY-----"
@@ -48,6 +51,9 @@ output_path="$test_root/output.log"
         'Undefined symbols for architecture arm64:' \
         "$source_root/src/credential.cpp:50:2: error: $credential_name=$synthetic_value" \
         "$source_root/src/auth.cpp:51:2: error: $authorization_name: Bearer $synthetic_value" \
+        "$source_root/src/api.cpp:51:3: error: $api_key_name=$short_synthetic_value" \
+        "$source_root/src/spaced.cpp:51:4: error: from $spaced_home_path" \
+        "$spaced_home_path:51:5: error: spaced location" \
         "$source_root/src/path.cpp:52:2: error: from $root_path $var_temp_path $unknown_path $windows_path" \
         "$source_root/src/network.cpp:53:2: error: contacted $private_ipv4 $link_local_ipv4 $private_ipv6 $link_local_ipv6 $synthetic_url" \
         "$source_root/src/opaque.cpp:54:2: error: value $opaque_value" \
@@ -73,10 +79,10 @@ output_path="$test_root/output.log"
     --max-lines 20 > "$output_path"
 
 /usr/bin/grep -F \
-    '| compiler error at barrier-source/src/example.cpp:42:7: expected expression' \
+    '| compiler error at barrier-source/src/example.cpp:42:7' \
     "$output_path" >/dev/null
 /usr/bin/grep -F \
-    '| compiler fatal error at barrier-build/generated.cpp:8:2: header missing' \
+    '| compiler fatal error at barrier-build/generated.cpp:8:2' \
     "$output_path" >/dev/null
 /usr/bin/grep -F \
     '| cmake error at barrier-source/CMakeLists.txt:81' \
@@ -84,19 +90,19 @@ output_path="$test_root/output.log"
 /usr/bin/grep -F \
     '| linker error: undefined symbols for architecture arm64' \
     "$output_path" >/dev/null
-/usr/bin/grep -F '<redacted-sensitive-message>' "$output_path" >/dev/null
 /usr/bin/grep -F '<external-path>' "$output_path" >/dev/null
-/usr/bin/grep -F '<network-address>' "$output_path" >/dev/null
-/usr/bin/grep -F '<url>' "$output_path" >/dev/null
-/usr/bin/grep -F '<redacted-value>' "$output_path" >/dev/null
-/usr/bin/grep -F 'compiler driver error: colored failure' "$output_path" >/dev/null
-/usr/bin/grep -F '<truncated>' "$output_path" >/dev/null
+/usr/bin/grep -F 'compiler driver error: command failed' "$output_path" >/dev/null
+/usr/bin/grep -F \
+    '| compiler error at barrier-source/src/oversized.cpp:88:2' \
+    "$output_path" >/dev/null
 
 for protected_value in \
     "$root_path" "$var_temp_path" "$unknown_path" "$windows_path" \
     "$private_ipv4" "$link_local_ipv4" "$private_ipv6" "$link_local_ipv6" \
     "$synthetic_url" "$credential_name" "$authorization_name" \
-    "$synthetic_value" "$pem_begin" "$pem_body" "$pem_end" "$opaque_value"; do
+    "$api_key_name" "$synthetic_value" "$short_synthetic_value" \
+    "$spaced_home_path" "$pem_begin" "$pem_body" "$pem_end" "$opaque_value" \
+    'expected expression' 'header missing' 'colored failure'; do
     if /usr/bin/grep -F -- "$protected_value" "$output_path" >/dev/null; then
         echo 'sanitized build diagnostic exposed protected input' >&2
         exit 1
@@ -129,7 +135,7 @@ emitted_output="$test_root/emitted.log"
     "$prefix_root" \
     "$hosted_runner_temp" > "$emitted_output"
 /usr/bin/grep -F \
-    '| compiler error at barrier-source/src/example.cpp:42:7: expected expression' \
+    '| compiler error at barrier-source/src/example.cpp:42:7' \
     "$emitted_output" >/dev/null
 /usr/bin/perl "$metadata_scanner" --source "$emitted_output" >/dev/null
 

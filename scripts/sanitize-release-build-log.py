@@ -59,7 +59,8 @@ MAC_ADDRESS = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?![0-
 SENSITIVE_TERM = re.compile(
     r"(?i)(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9_-]*"
     r"(?:token|secret|password|passwd|authorization|credential|cookie|"
-    r"private[_-]?key|access[_-]?key)[A-Za-z0-9_-]*)(?:[^A-Za-z0-9]|$)"
+    r"private[_-]?key|access[_-]?key|api[_-]?key|bearer)"
+    r"[A-Za-z0-9_-]*)(?:[^A-Za-z0-9]|$)"
 )
 OPAQUE_VALUE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9_])")
 SAFE_ARCH = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
@@ -70,9 +71,9 @@ SAFE_LOCATION_OUTPUT = (
 )
 ALLOWED_DETAIL = re.compile(
     rf"^\| (?:compiler (?:fatal )?error at (?:{SAFE_LOCATION_OUTPUT}):"
-    r"[0-9]+(?::[0-9]+)?: [ -~]+|"
+    r"[0-9]+(?::[0-9]+)?|"
     rf"cmake error at (?:{SAFE_LOCATION_OUTPUT}):[0-9]+|"
-    r"compiler driver error: [ -~]+|"
+    r"compiler driver error: command failed|"
     r"linker error: (?:command failed|undefined symbols for architecture [A-Za-z0-9_-]{1,32})|"
     r"build tool error: command failed|autogen error: subprocess failed)$"
 )
@@ -160,28 +161,6 @@ def normalize_location(raw_path: str, replacements) -> str:
     return "<relative-path>"
 
 
-def sanitize_message(raw_message: str, replacements) -> str:
-    message = strip_controls(raw_message.strip())
-    if not message:
-        return "<message-unavailable>"
-    if PEM_BEGIN.search(message) or PEM_END.search(message) or SENSITIVE_TERM.search(message):
-        return "<redacted-sensitive-message>"
-
-    for root, label in replacements:
-        message = message.replace(root, label)
-    message = URL.sub("<url>", message)
-    message = UNC_PATH.sub("<external-path>", message)
-    message = WINDOWS_PATH.sub("<external-path>", message)
-    message = TILDE_PATH.sub("<external-path>", message)
-    message = POSIX_ABSOLUTE_PATH.sub("<external-path>", message)
-    message = IPV4_ADDRESS.sub("<network-address>", message)
-    message = IPV6_ADDRESS.sub("<network-address>", message)
-    message = MAC_ADDRESS.sub("<network-address>", message)
-    message = OPAQUE_VALUE.sub("<redacted-value>", message)
-    message = re.sub(r"\s+", " ", message).strip()
-    return message or "<message-unavailable>"
-
-
 def structured_diagnostic(line: str, replacements):
     match = COMPILER_DIAGNOSTIC.match(line)
     if match:
@@ -191,8 +170,7 @@ def structured_diagnostic(line: str, replacements):
         if column:
             line_number = f"{line_number}:{column}"
         severity = match.group("severity").lower()
-        message = sanitize_message(match.group("message"), replacements)
-        return f"compiler {severity} at {location}:{line_number}: {message}"
+        return f"compiler {severity} at {location}:{line_number}"
 
     match = CMAKE_DIAGNOSTIC.match(line)
     if match:
@@ -201,8 +179,7 @@ def structured_diagnostic(line: str, replacements):
 
     match = COMPILER_DRIVER_DIAGNOSTIC.match(line)
     if match:
-        message = sanitize_message(match.group("message"), replacements)
-        return f"compiler driver error: {message}"
+        return "compiler driver error: command failed"
 
     match = UNDEFINED_SYMBOLS.match(line)
     if match and SAFE_ARCH.fullmatch(match.group("arch")):
