@@ -40,6 +40,7 @@ jobs:
         run: |
           scripts/tests/scan-protected-metadata_test.sh
           scripts/tests/build-macos-release-prefix_diagnostics_test.sh
+          scripts/tests/sanitize-release-build-log_test.sh
           scripts/tests/verify-macos-deployment-target_test.sh
           scripts/tests/public-audit_test.sh
 

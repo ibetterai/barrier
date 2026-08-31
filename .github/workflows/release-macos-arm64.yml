@@ -131,6 +131,14 @@ jobs:
           if ! "$cmake_bin" --build "$RELEASE_BUILD_DIR" --parallel 3 \
               >"$build_log" 2>&1; then
             echo 'locked release build failed' >&2
+            if ! scripts/emit-sanitized-release-diagnostics.sh \
+                "$build_log" \
+                "$GITHUB_WORKSPACE" \
+                "$RELEASE_BUILD_DIR" \
+                "$RELEASE_PREFIX" \
+                "$RUNNER_TEMP"; then
+              echo 'privacy-safe build diagnostics unavailable' >&2
+            fi
             exit 1
           fi
           if grep -Eiq \
