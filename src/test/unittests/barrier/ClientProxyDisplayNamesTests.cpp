@@ -108,6 +108,16 @@ std::vector<UInt32> oneRectDdis()
     return rects;
 }
 
+std::vector<UInt32> portraitRectDdis()
+{
+    std::vector<UInt32> rects;
+    rects.push_back(0);
+    rects.push_back(0);
+    rects.push_back(1080);
+    rects.push_back(1920);
+    return rects;
+}
+
 void addInfo(Wire& wire)
 {
     wire.add(kMsgDInfo + 4, (SInt32)0, (SInt32)0, (SInt32)1920, (SInt32)1080,
@@ -169,6 +179,29 @@ TEST(ClientProxyDisplayNamesTests, ddisPeerReportsRealDisplayRects)
     EXPECT_EQ(1920, displays[0].w);
     EXPECT_EQ(1920, displays[1].x);
     EXPECT_EQ(1080, displays[1].w);
+}
+
+TEST(ClientProxyDisplayNamesTests, ddisPeerPreservesPortraitRectOrientation)
+{
+    TestEventQueue events;
+    Wire wire;
+    addInfo(wire);
+    std::vector<UInt32> rects = portraitRectDdis();
+    wire.add(kMsgDDisplayInfo + 4, &rects);
+
+    ScriptedStream* stream = new ScriptedStream;
+    stream->in = wire.bytes;
+    ClientProxy1_0Test proxy("peer", stream, &events);
+    proxy.setPeerMinorVersion(7);
+
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DINF")));
+    ASSERT_TRUE(proxy.parse(reinterpret_cast<const UInt8*>("DDIS")));
+
+    std::vector<ScreenRect> displays;
+    proxy.getDisplays(displays);
+    ASSERT_EQ(1u, displays.size());
+    EXPECT_EQ(1080, displays[0].w);
+    EXPECT_EQ(1920, displays[0].h);
 }
 
 TEST(ClientProxyDisplayNamesTests, ddnmParsedFor17Peer_orderMatchesDisplays)

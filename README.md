@@ -11,9 +11,9 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
 ## Download
 
 - Latest Apple Silicon macOS build:
-  [Barrier 3.3.0](https://github.com/ibetterai/barrier/releases/tag/v3.3.0)
+  [Barrier 3.3.1](https://github.com/ibetterai/barrier/releases/tag/v3.3.1)
 - Current DMG:
-  [Barrier-3.3.0-release-arm64.dmg](https://github.com/ibetterai/barrier/releases/download/v3.3.0/Barrier-3.3.0-release-arm64.dmg)
+  [Barrier-3.3.1-release-arm64.dmg](https://github.com/ibetterai/barrier/releases/download/v3.3.1/Barrier-3.3.1-release-arm64.dmg)
 
 This fork currently publishes Apple Silicon macOS packages only.
 
@@ -26,6 +26,10 @@ This fork currently publishes Apple Silicon macOS packages only.
   when displays move and the configuration is re-saved.
 - Cross-machine edge routing based on real display rectangles, while preserving
   normal local macOS transitions between displays on the same host.
+- Freeform edge-gap tolerance so visually adjacent screens keep their intended
+  links even when saved canvas coordinates contain small rounding gaps.
+- Correct right/bottom edge coordinate mapping for freeform partial links, so a
+  cursor entering a neighboring screen does not bounce back to the source screen.
 - macOS display labels in the freeform canvas, using OS-provided display names
   when available.
 - Client display wake-on-entry when the target macOS display system is asleep.
@@ -42,15 +46,17 @@ This fork currently publishes Apple Silicon macOS packages only.
 
 ## Compatibility
 
-Barrier 3.3.0 is the recommended release from this fork.
+Barrier 3.3.1 is the recommended release from this fork.
 
-- Barrier 3.3.0 works with Barrier 2.4.0 peers by negotiating old-peer protocol
+- Barrier 3.3.1 works with Barrier 2.4.0 peers by negotiating old-peer protocol
   behavior and suppressing 3.x-only display metadata unless the peer supports it.
 - Barrier 3.x peers keep enhanced multi-display and L-shaped routing when both
   sides support protocol 1.7.
 - Barrier 2.4.0 peers use rectangular-screen fallback behavior.
 - Barrier 3.2.0 is superseded and hidden because it may not interoperate with
   Barrier 2.4.0 peers.
+- Barrier 3.3.1 keeps the 3.3.0 compatibility behavior and fixes freeform
+  partial-edge routing regressions in multi-monitor macOS layouts.
 
 ## Known limitations
 

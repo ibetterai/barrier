@@ -63,3 +63,32 @@ TEST(ServerConfigPersistenceTests, freeformGeometrySurvivesRelaunch)
         EXPECT_EQ(displayNames["client"], QStringList({"Studio Display"}));
     }
 }
+
+TEST(ServerConfigPersistenceTests, parsesClientDisplayRectsLogLine)
+{
+    QString clientName;
+    QList<QRect> rects;
+
+    ASSERT_TRUE(barrier::parseClientDisplayRectsLogLine(
+            "INFO: client \"portrait-client\" display rects: [0,0 1080x1920]",
+            clientName, rects));
+
+    EXPECT_EQ(clientName, QString("portrait-client"));
+    ASSERT_EQ(rects.size(), 1);
+    EXPECT_EQ(rects[0], QRect(0, 0, 1080, 1920));
+}
+
+TEST(ServerConfigPersistenceTests, parsesMultipleDisplayRectsLogLine)
+{
+    QString clientName;
+    QList<QRect> rects;
+
+    ASSERT_TRUE(barrier::parseClientDisplayRectsLogLine(
+            "INFO: client \"client\" display rects: [0,0 1920x1080; 1920,-840 1080x1920]",
+            clientName, rects));
+
+    EXPECT_EQ(clientName, QString("client"));
+    ASSERT_EQ(rects.size(), 2);
+    EXPECT_EQ(rects[0], QRect(0, 0, 1920, 1080));
+    EXPECT_EQ(rects[1], QRect(1920, -840, 1080, 1920));
+}

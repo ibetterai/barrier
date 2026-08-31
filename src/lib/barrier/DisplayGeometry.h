@@ -95,6 +95,22 @@ std::vector<DisplayLink> deriveDisplayLinks(
     const std::vector<ScreenRect>& targetRects, ScreenOrigin targetOrigin,
     SInt32 adjacencyTolerance);
 
+//! Convert an edge-crossing coordinate into the screen-union frame.
+/*!
+\p screenUnion is the bounding box returned by unionBounds() for the source
+screen's display rectangles, \p crossedDisplay is the physical display whose
+external edge is being crossed, and \p x/\p y are the cursor coordinates in
+the source screen's local coordinate space.  Server::mapToNeighbor() performs
+multi-screen traversal in the source screen union frame; this helper preserves
+small overshoot from the crossed physical display edge while anchoring left/top
+crossings at the union's low edge and right/bottom crossings at the union's
+high edge.
+*/
+SInt32 canonicalEdgeCoordinate(EDirection direction,
+                               const ScreenRect& screenUnion,
+                               const ScreenRect& crossedDisplay,
+                               SInt32 x, SInt32 y, SInt32 zoneSize);
+
 //! Label of the display containing (x, y) in an ordered snapshot.
 /*!
 \p displays and \p names are the screen's ordered display snapshot as

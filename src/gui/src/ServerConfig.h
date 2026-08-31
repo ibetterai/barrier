@@ -51,6 +51,8 @@ class ServerConfig : public BaseConfig
         // Freeform accessors
         void setFreeformPosition(const QString& name, int x, int y);
         bool getFreeformPosition(const QString& name, int& x, int& y) const;
+        // Per-display rectangles populated from ClientProxy DDIS metadata
+        // (MainWindow parses the daemon log line into these).
         void setFreeformDisplayRects(const QString& name, const QList<QRect>& rects);
         bool getFreeformDisplayRects(const QString& name, QList<QRect>& rects) const;
         // Per-display product names for a screen, ordered identically to

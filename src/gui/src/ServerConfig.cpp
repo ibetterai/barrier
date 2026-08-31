@@ -291,11 +291,10 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
 
     outStream << "section: links" << endl;
 
-    // Two display edges that are merely close (a few pixels of drag
-    // imprecision, not a deliberate exact match) are still treated as
-    // touching, so link generation isn't fragile to sub-pixel misalignment
-    // in the freeform canvas.
-    static const int kFreeformAdjacencyTolerancePx = 15;
+    // A drag that is visually snapped on the scaled freeform canvas can still
+    // round to a few dozen layout pixels. Treat that as touching so visually
+    // adjacent displays still produce links.
+    static const int kFreeformAdjacencyTolerancePx = 32;
     if (config.hasFreeformPositions()) {
         // Freeform layout: generate partial-interval links from the shared
         // display geometry primitives.  Individual physical displays decide

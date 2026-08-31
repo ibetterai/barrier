@@ -1,6 +1,7 @@
 #include "FreeformLayoutSettings.h"
 
 #include <QSettings>
+#include <QRegExp>
 
 namespace barrier {
 
@@ -91,6 +92,46 @@ void loadFreeformLayoutSettings(QSettings& settings,
                 settings.value("names").toStringList();
     }
     settings.endArray();
+}
+
+bool parseClientDisplayRectsLogLine(const QString& line,
+                                    QString& clientName,
+                                    QList<QRect>& rects)
+{
+    QRegExp lineRegex(".*client \"([^\"]+)\" display rects: \\[(.*)\\]");
+    if (!lineRegex.exactMatch(line)) {
+        return false;
+    }
+
+    const QString name = lineRegex.cap(1);
+    const QString content = lineRegex.cap(2).trimmed();
+    if (name.isEmpty() || content.isEmpty()) {
+        return false;
+    }
+
+    QList<QRect> parsed;
+    const QStringList parts = content.split(QLatin1Char(';'), QString::SkipEmptyParts);
+    for (const QString& part : parts) {
+        QRegExp rectRegex("\\s*(-?\\d+),(-?\\d+)\\s+(\\d+)x(\\d+)\\s*");
+        if (!rectRegex.exactMatch(part)) {
+            return false;
+        }
+        const int width = rectRegex.cap(3).toInt();
+        const int height = rectRegex.cap(4).toInt();
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        parsed.append(QRect(rectRegex.cap(1).toInt(), rectRegex.cap(2).toInt(),
+                            width, height));
+    }
+
+    if (parsed.isEmpty()) {
+        return false;
+    }
+
+    clientName = name;
+    rects = parsed;
+    return true;
 }
 
 } // namespace barrier

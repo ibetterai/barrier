@@ -248,10 +248,10 @@ void Config::generateFreeformLinks()
 		}
 	}
 
-	// A small gap or overlap (a few pixels of drag imprecision in the GUI's
-	// freeform canvas) still counts as touching, so link generation isn't
-	// fragile to sub-pixel misalignment.
-	static const SInt32 kFreeformAdjacencyTolerancePx = 15;
+	// A drag that is visually snapped on the scaled freeform canvas can still
+	// round to a few dozen layout pixels. Treat that as touching so visually
+	// adjacent displays still produce links.
+	static const SInt32 kFreeformAdjacencyTolerancePx = 32;
 	// For each ordered pair of displays on different screens, check
 	// adjacency on each side and create a partial edge link for the
 	// overlapping interval.

@@ -140,23 +140,59 @@ TEST(DisplayGeometryTests, deriveDisplayLinks_pointContact_noLink)
     EXPECT_TRUE(links.empty());
 }
 
-TEST(DisplayGeometryTests, deriveDisplayLinks_tolerance_accepts3pxRejects20px)
+TEST(DisplayGeometryTests, deriveDisplayLinks_tolerance_acceptsVisualPlacementGap)
 {
-    // A 3px gap is within the 15px adjacency tolerance.
+    // The GUI canvas is scaled down, so a placement that looks flush can
+    // persist with a small global-layout gap. Use a synthetic representative
+    // three-screen layout with a portrait screen saved 17px from the stack.
     std::vector<DisplayLink> links = deriveDisplayLinks(
-        "A", {{0, 0, 100, 100}}, ScreenOrigin{0, 0},
-        "B", {{103, 0, 100, 100}}, ScreenOrigin{0, 0}, 15);
+        "top", {{0, 0, 1600, 900}}, ScreenOrigin{0, -900},
+        "portrait", {{0, 0, 900, 1600}}, ScreenOrigin{1617, -817}, 24);
     ASSERT_EQ(1u, links.size());
-    const DisplayLink* link = findLink(links, "A", kRight, "B", kLeft);
-    ASSERT_TRUE(link != NULL);
-    expectInterval(link->sourceInterval, 0.0f, 1.0f);
-    expectInterval(link->targetInterval, 0.0f, 1.0f);
+    EXPECT_TRUE(findLink(links, "top", kRight, "portrait", kLeft) != NULL);
+    links = deriveDisplayLinks(
+        "portrait", {{0, 0, 900, 1600}}, ScreenOrigin{1617, -817},
+        "top", {{0, 0, 1600, 900}}, ScreenOrigin{0, -900}, 24);
+    ASSERT_EQ(1u, links.size());
+    EXPECT_TRUE(findLink(links, "portrait", kLeft, "top", kRight) != NULL);
 
-    // A 20px gap is beyond the 15px tolerance.
+    links = deriveDisplayLinks(
+        "bottom", {{0, 0, 1600, 900}}, ScreenOrigin{0, 0},
+        "portrait", {{0, 0, 900, 1600}}, ScreenOrigin{1617, -817}, 24);
+    ASSERT_EQ(1u, links.size());
+    EXPECT_TRUE(findLink(links, "bottom", kRight, "portrait", kLeft) != NULL);
+    links = deriveDisplayLinks(
+        "portrait", {{0, 0, 900, 1600}}, ScreenOrigin{1617, -817},
+        "bottom", {{0, 0, 1600, 900}}, ScreenOrigin{0, 0}, 24);
+    ASSERT_EQ(1u, links.size());
+    EXPECT_TRUE(findLink(links, "portrait", kLeft, "bottom", kRight) != NULL);
+    // A clearly separated 40px gap is still not adjacent.
     links = deriveDisplayLinks(
         "A", {{0, 0, 100, 100}}, ScreenOrigin{0, 0},
-        "B", {{120, 0, 100, 100}}, ScreenOrigin{0, 0}, 15);
+        "B", {{140, 0, 100, 100}}, ScreenOrigin{0, 0}, 24);
     EXPECT_TRUE(links.empty());
+}
+
+TEST(DisplayGeometryTests, canonicalEdgeCoordinate_anchorsRightBottomAtUnionHighEdge)
+{
+    const ScreenRect sourceUnion = {0, 0, 1920, 1080};
+    const ScreenRect display = {0, 0, 1920, 1080};
+
+    EXPECT_EQ(1920, canonicalEdgeCoordinate(kRight, sourceUnion, display,
+                                            1919, 540, 1));
+    EXPECT_EQ(1080, canonicalEdgeCoordinate(kBottom, sourceUnion, display,
+                                            960, 1079, 1));
+}
+
+TEST(DisplayGeometryTests, canonicalEdgeCoordinate_anchorsOffsetDisplayLeftAtUnionLowEdge)
+{
+    const ScreenRect sourceUnion = {0, 0, 3000, 1920};
+    const ScreenRect portraitDisplay = {1920, 0, 1080, 1920};
+
+    EXPECT_EQ(-1, canonicalEdgeCoordinate(kLeft, sourceUnion, portraitDisplay,
+                                          1920, 960, 1));
+    EXPECT_EQ(3000, canonicalEdgeCoordinate(kRight, sourceUnion, portraitDisplay,
+                                            2999, 960, 1));
 }
 
 TEST(DisplayGeometryTests, deriveDisplayLinks_outOfRangeRect_notInUnion)

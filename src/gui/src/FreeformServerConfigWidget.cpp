@@ -95,16 +95,48 @@ void FreeformServerConfigWidget::setServerScreenName(const QString& name)
 
 void FreeformServerConfigWidget::setClientDisplays(const QString& clientName, const QList<QRect>& rects)
 {
-    m_clientName = clientName;
-    m_clientRects = rects;
-    m_clientDisplayNames.clear(); // names apply to the previous rect set
+    if (clientName.isEmpty()) return;
+    ClientLayout& client = m_clients[clientName];
+    client.rects = rects;
+    client.displayNames.clear(); // names apply to the previous rect set
+    if (m_activeClientName.isEmpty()) {
+        m_activeClientName = clientName;
+    }
+    update();
+}
+
+QList<QRect> FreeformServerConfigWidget::clientDisplays(const QString& clientName) const
+{
+    return m_clients.value(clientName).rects;
+}
+
+QList<QRect> FreeformServerConfigWidget::clientDisplays() const
+{
+    return clientDisplays(m_activeClientName);
+}
+
+void FreeformServerConfigWidget::setClientDisplayNames(
+        const QString& clientName, const QStringList& names)
+{
+    if (!m_clients.contains(clientName)) return;
+    ClientLayout& client = m_clients[clientName];
+    client.displayNames = alignDisplayNames(names, client.rects.size());
     update();
 }
 
 void FreeformServerConfigWidget::setClientDisplayNames(const QStringList& names)
 {
-    m_clientDisplayNames = alignDisplayNames(names, m_clientRects.size());
-    update();
+    setClientDisplayNames(m_activeClientName, names);
+}
+
+QStringList FreeformServerConfigWidget::clientDisplayNames(const QString& clientName) const
+{
+    return m_clients.value(clientName).displayNames;
+}
+
+QStringList FreeformServerConfigWidget::clientDisplayNames() const
+{
+    return clientDisplayNames(m_activeClientName);
 }
 
 QString FreeformServerConfigWidget::canvasDisplayLabel(
@@ -134,10 +166,33 @@ QStringList FreeformServerConfigWidget::alignDisplayNames(
     return aligned;
 }
 
+void FreeformServerConfigWidget::setClientPosition(const QString& clientName, const QPoint& pos)
+{
+    if (clientName.isEmpty()) return;
+    ClientLayout& client = m_clients[clientName];
+    client.pos = pos;
+    m_activeClientName = clientName;
+    update();
+}
+
 void FreeformServerConfigWidget::setClientPosition(const QPoint& pos)
 {
-    m_clientPos = pos;
-    update();
+    setClientPosition(m_activeClientName, pos);
+}
+
+QPoint FreeformServerConfigWidget::clientPosition(const QString& clientName) const
+{
+    return m_clients.value(clientName).pos;
+}
+
+QPoint FreeformServerConfigWidget::clientPosition() const
+{
+    return clientPosition(m_activeClientName);
+}
+
+QStringList FreeformServerConfigWidget::clientNames() const
+{
+    return m_clients.keys();
 }
 
 void FreeformServerConfigWidget::syncFromSystemDisplays()
@@ -164,12 +219,25 @@ void FreeformServerConfigWidget::syncFromSystemDisplays()
 #endif
 }
 
+QRect FreeformServerConfigWidget::m_clientGlobalBounds(const ClientLayout& client) const
+{
+    if (client.rects.isEmpty()) return QRect();
+    QRect bounds = client.rects[0].translated(client.pos);
+    for (int i = 1; i < client.rects.size(); ++i) {
+        bounds = bounds.united(client.rects[i].translated(client.pos));
+    }
+    return bounds;
+}
+
 QRect FreeformServerConfigWidget::m_clientGlobalBounds() const
 {
-    if (m_clientRects.isEmpty()) return QRect();
-    QRect bounds = m_clientRects[0].translated(m_clientPos);
-    for (int i = 1; i < m_clientRects.size(); ++i) {
-        bounds = bounds.united(m_clientRects[i].translated(m_clientPos));
+    QRect bounds;
+    for (QMap<QString, ClientLayout>::const_iterator it = m_clients.constBegin();
+         it != m_clients.constEnd(); ++it) {
+        const QRect clientBounds = m_clientGlobalBounds(it.value());
+        if (!clientBounds.isEmpty()) {
+            bounds = bounds.united(clientBounds);
+        }
     }
     return bounds;
 }
@@ -177,10 +245,10 @@ QRect FreeformServerConfigWidget::m_clientGlobalBounds() const
 void FreeformServerConfigWidget::computeTransform(qreal& scale, QPoint& offset) const
 {
     // Compute a global-to-widget transform that fits every server display
-    // plus the client's current bounds into the widget, with padding.
+    // plus every connected client's current bounds into the widget, with padding.
     QRect allBounds;
     for (const QRect& r : m_serverRects) allBounds = allBounds.united(r);
-    QRect clientBounds = m_clientGlobalBounds();
+    const QRect clientBounds = m_clientGlobalBounds();
     if (!clientBounds.isEmpty()) allBounds = allBounds.united(clientBounds);
     if (allBounds.isEmpty()) {
         scale = 1.0;
@@ -193,7 +261,7 @@ void FreeformServerConfigWidget::computeTransform(qreal& scale, QPoint& offset) 
     qreal sy = (qreal)height() / allBounds.height();
     scale = qMin(sx, sy) * 0.9;
     offset = QPoint((width() - allBounds.width() * scale) / 2 - allBounds.x() * scale,
-                     (height() - allBounds.height() * scale) / 2 - allBounds.y() * scale);
+                    (height() - allBounds.height() * scale) / 2 - allBounds.y() * scale);
 }
 
 void FreeformServerConfigWidget::paintEvent(QPaintEvent*)
@@ -233,15 +301,22 @@ void FreeformServerConfigWidget::paintEvent(QPaintEvent*)
     }
 
     // Client displays (draggable, orange)
-    for (int i = 0; i < m_clientRects.size(); ++i) {
-        QRect gr = m_clientRects[i].translated(m_clientPos);
-        QRect wr = toWidget(gr);
-        p.fillRect(wr, QColor(220, 120, 40));
-        p.setPen(QColor(255, 160, 80));
-        p.drawRect(wr);
-        p.setPen(Qt::white);
-        p.drawText(wr, Qt::AlignCenter,
-                   canvasDisplayLabel(m_clientName, i + 1, m_clientDisplayNames.value(i)));
+    for (QMap<QString, ClientLayout>::const_iterator it = m_clients.constBegin();
+         it != m_clients.constEnd(); ++it) {
+        const QString& clientName = it.key();
+        const ClientLayout& client = it.value();
+        for (int i = 0; i < client.rects.size(); ++i) {
+            QRect gr = client.rects[i].translated(client.pos);
+            QRect wr = toWidget(gr);
+            p.fillRect(wr, QColor(220, 120, 40));
+            p.setPen(clientName == m_activeClientName
+                     ? QColor(255, 190, 100)
+                     : QColor(255, 160, 80));
+            p.drawRect(wr);
+            p.setPen(Qt::white);
+            p.drawText(wr, Qt::AlignCenter,
+                       canvasDisplayLabel(clientName, i + 1, client.displayNames.value(i)));
+        }
     }
 
     // Notch hint
@@ -251,18 +326,22 @@ void FreeformServerConfigWidget::paintEvent(QPaintEvent*)
 
 void FreeformServerConfigWidget::mousePressEvent(QMouseEvent* event)
 {
-    QRect clientBounds = m_clientGlobalBounds();
-    if (clientBounds.isEmpty()) return;
-
     qreal scale;
     QPoint offset;
     computeTransform(scale, offset);
 
-    QRect wClient(int(clientBounds.x() * scale + offset.x()),
-                  int(clientBounds.y() * scale + offset.y()),
-                  int(clientBounds.width() * scale),
-                  int(clientBounds.height() * scale));
-    if (wClient.contains(event->pos())) {
+    for (QMap<QString, ClientLayout>::const_iterator it = m_clients.constBegin();
+         it != m_clients.constEnd(); ++it) {
+        const QRect clientBounds = m_clientGlobalBounds(it.value());
+        if (clientBounds.isEmpty()) continue;
+
+        QRect wClient(int(clientBounds.x() * scale + offset.x()),
+                      int(clientBounds.y() * scale + offset.y()),
+                      int(clientBounds.width() * scale),
+                      int(clientBounds.height() * scale));
+        if (!wClient.contains(event->pos())) continue;
+
+        m_activeClientName = it.key();
         m_dragging = true;
         // Freeze the transform for the duration of the drag (see paintEvent).
         m_dragScale = scale;
@@ -274,27 +353,27 @@ void FreeformServerConfigWidget::mousePressEvent(QMouseEvent* event)
 
 void FreeformServerConfigWidget::mouseMoveEvent(QMouseEvent* event)
 {
-    if (!m_dragging) return;
+    if (!m_dragging || !m_clients.contains(m_activeClientName)) return;
 
     QPoint widgetPos = event->pos() - m_dragOffset;
     QPoint newGlobalPos(int((widgetPos.x() - m_dragViewOffset.x()) / m_dragScale),
                         int((widgetPos.y() - m_dragViewOffset.y()) / m_dragScale));
 
-    if (!m_clientRects.isEmpty()) {
-        QRect localBounds = m_clientRects[0];
-        for (int i = 1; i < m_clientRects.size(); ++i) {
-            localBounds = localBounds.united(m_clientRects[i]);
+    ClientLayout& client = m_clients[m_activeClientName];
+    if (!client.rects.isEmpty()) {
+        QRect localBounds = client.rects[0];
+        for (int i = 1; i < client.rects.size(); ++i) {
+            localBounds = localBounds.united(client.rects[i]);
         }
         const int cw = localBounds.width();
         const int ch = localBounds.height();
         const QRect tentative(newGlobalPos.x(), newGlobalPos.y(), cw, ch);
 
-        // Snap to the closest server edge within range, per axis. Only
-        // consider a server rect a candidate on an axis when the client
-        // actually overlaps it on the OTHER axis -- otherwise "left ==
-        // right" is a coincidence of position, not a real adjacency, and
-        // snapping to it would yank the display to an unrelated edge.
-        const int snap = 20;
+        // Snap using a visible widget-pixel threshold converted back into
+        // global layout pixels. A fixed 20 layout-pixel threshold is only a
+        // few screen pixels once a multi-screen layout is scaled down, so the
+        // user can place displays that look adjacent but persist with a gap.
+        const int snap = qMax(32, int(20 / m_dragScale));
         int bestDx = snap + 1, bestDy = snap + 1;
         int snapX = newGlobalPos.x(), snapY = newGlobalPos.y();
         for (const QRect& sr : m_serverRects) {
@@ -320,9 +399,9 @@ void FreeformServerConfigWidget::mouseMoveEvent(QMouseEvent* event)
         if (bestDy <= snap) newGlobalPos.setY(snapY);
     }
 
-    m_clientPos = newGlobalPos;
+    client.pos = newGlobalPos;
     update();
-    emit clientPositionChanged(m_clientPos);
+    emit clientPositionChanged(m_activeClientName, client.pos);
 }
 
 void FreeformServerConfigWidget::mouseReleaseEvent(QMouseEvent*)

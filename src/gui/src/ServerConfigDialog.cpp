@@ -80,55 +80,60 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     }
     m_pFreeformWidget->setServerScreenName(m_LocalScreenName);
     m_pFreeformWidget->syncFromSystemDisplays();
-        // Seed client rects from the first screen that isn't this machine
-        // (the server). Comparing against m_LocalScreenName -- not
-        // "screens()[0]" -- because grid slot 0 is often an empty/unrelated
-        // cell, not actually the server's own screen.
-        QString clientName;
-        for (const Screen& s : serverConfig().screens()) {
-            if (!s.isNull() && s.name().compare(m_LocalScreenName, Qt::CaseInsensitive) != 0) {
-                clientName = s.name();
-                break;
-            }
+    // Seed every non-server screen into the freeform canvas. Earlier code
+    // stopped after the first client, so a second 3.3.0 client could be
+    // connected and present in ServerConfig but never drawn or persisted.
+    QRect occupiedBounds;
+    for (const QRect& rect : m_pFreeformWidget->serverDisplays()) {
+        occupiedBounds = occupiedBounds.united(rect);
+    }
+    int fallbackX = occupiedBounds.isEmpty()
+            ? 0
+            : occupiedBounds.x() + occupiedBounds.width() + 20;
+    auto includeClientBounds = [&occupiedBounds](const QList<QRect>& rects, const QPoint& pos) {
+        for (const QRect& rect : rects) {
+            occupiedBounds = occupiedBounds.united(rect.translated(pos));
         }
-        if (!clientName.isEmpty()) {
-            // Client display names (ordered per-display product names from
-            // the client's DDNM metadata) reach the dialog through
-            // ServerConfig: the daemon's ClientProxy1_0 logs them and
-            // MainWindow parses them into the config. Empty/absent names
-            // keep the canvas "<client screen name> #<index>" fallbacks.
-            QList<QRect> existing;
-            if (serverConfig().getFreeformDisplayRects(clientName, existing) && !existing.isEmpty()) {
-                m_pFreeformWidget->setClientDisplays(clientName, existing);
-            } else {
-                // Default single display for the client
-                QList<QRect> def;
-                def.append(QRect(0, 0, 1920, 1080));
-                m_pFreeformWidget->setClientDisplays(clientName, def);
-            }
-            QStringList clientNames;
-            if (serverConfig().getFreeformDisplayNames(clientName, clientNames)) {
-                m_pFreeformWidget->setClientDisplayNames(clientNames);
-            }
-            int fx = 0, fy = 0;
-            if (serverConfig().getFreeformPosition(clientName, fx, fy)) {
-                m_pFreeformWidget->setClientPosition(QPoint(fx, fy));
-            }
+    };
+    const int fallbackY = occupiedBounds.isEmpty() ? 0 : occupiedBounds.y();
+    for (const Screen& s : serverConfig().screens()) {
+        if (s.isNull() || s.name().compare(m_LocalScreenName, Qt::CaseInsensitive) == 0) {
+            continue;
         }
-        connect(m_pFreeformWidget, &FreeformServerConfigWidget::clientPositionChanged,
-                this, [this](const QPoint& pos) {
-                    // Persist freeform position for the client screen
-                    QString cname;
-                    for (const Screen& s : serverConfig().screens()) {
-                        if (!s.isNull() && s.name().compare(m_LocalScreenName, Qt::CaseInsensitive) != 0) {
-                            cname = s.name();
-                            break;
-                        }
-                    }
-                    if (!cname.isEmpty()) {
-                        serverConfig().setFreeformPosition(cname, pos.x(), pos.y());
-                    }
-                });
+
+        const QString clientName = s.name();
+        QList<QRect> displayRects;
+        if (!serverConfig().getFreeformDisplayRects(clientName, displayRects) ||
+                displayRects.isEmpty()) {
+            displayRects.append(QRect(0, 0, 1920, 1080));
+        }
+        m_pFreeformWidget->setClientDisplays(clientName, displayRects);
+
+        QStringList displayNames;
+        if (serverConfig().getFreeformDisplayNames(clientName, displayNames)) {
+            m_pFreeformWidget->setClientDisplayNames(clientName, displayNames);
+        }
+
+        int fx = 0, fy = 0;
+        if (serverConfig().getFreeformPosition(clientName, fx, fy)) {
+            const QPoint savedPos(fx, fy);
+            m_pFreeformWidget->setClientPosition(clientName, savedPos);
+            includeClientBounds(displayRects, savedPos);
+            fallbackX = occupiedBounds.x() + occupiedBounds.width() + 20;
+            continue;
+        }
+
+        const QPoint fallbackPos(fallbackX, fallbackY);
+        m_pFreeformWidget->setClientPosition(clientName, fallbackPos);
+        includeClientBounds(displayRects, fallbackPos);
+        fallbackX = occupiedBounds.x() + occupiedBounds.width() + 20;
+    }
+    connect(m_pFreeformWidget, &FreeformServerConfigWidget::clientPositionChanged,
+            this, [this](const QString& clientName, const QPoint& pos) {
+                if (!clientName.isEmpty()) {
+                    serverConfig().setFreeformPosition(clientName, pos.x(), pos.y());
+                }
+            });
 
     // QTabWidget otherwise sizes itself (and the whole dialog) to fit the
     // TALLEST page. The freeform canvas makes "Screens and links" far
@@ -188,20 +193,13 @@ void ServerConfigDialog::accept()
             serverConfig().setFreeformDisplayRects(sname, m_pFreeformWidget->serverDisplays());
             serverConfig().setFreeformPosition(sname, 0, 0);
         }
-        // Client with its dragged position and display rects
-        QString cname = m_pFreeformWidget->clientName();
-        if (cname.isEmpty()) {
-            for (const Screen& s : serverConfig().screens()) {
-                if (!s.isNull() && s.name().compare(sname, Qt::CaseInsensitive) != 0) {
-                    cname = s.name();
-                    break;
-                }
-            }
-        }
-        if (!cname.isEmpty()) {
-            serverConfig().setFreeformDisplayRects(cname, m_pFreeformWidget->clientDisplays());
-            serverConfig().setFreeformDisplayNames(cname, m_pFreeformWidget->clientDisplayNames());
-            QPoint pos = m_pFreeformWidget->clientPosition();
+        // Every connected client with its dragged position and display rects.
+        const QStringList clientNames = m_pFreeformWidget->clientNames();
+        for (const QString& cname : clientNames) {
+            if (cname.isEmpty()) continue;
+            serverConfig().setFreeformDisplayRects(cname, m_pFreeformWidget->clientDisplays(cname));
+            serverConfig().setFreeformDisplayNames(cname, m_pFreeformWidget->clientDisplayNames(cname));
+            QPoint pos = m_pFreeformWidget->clientPosition(cname);
             serverConfig().setFreeformPosition(cname, pos.x(), pos.y());
         }
     }

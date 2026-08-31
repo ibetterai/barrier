@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QRect>
+#include <QPoint>
 #include <QMap>
 #include <QList>
 #include <QString>
@@ -14,6 +15,7 @@ public:
     explicit FreeformServerConfigWidget(QWidget* parent = nullptr);
 
     void setServerDisplays(const QList<QRect>& rects);
+    QList<QRect> serverDisplays() const { return m_serverRects; }
     // This machine's Barrier screen name; used for the per-display
     // fallback label "<name> #<index>" when the OS has no product name.
     void setServerScreenName(const QString& name);
@@ -23,17 +25,22 @@ public:
     // "<server screen name> #<index>".
     void setServerDisplayNames(const QStringList& names);
     void setClientDisplays(const QString& clientName, const QList<QRect>& rects);
-    // Optional per-display product names for the client, same order as
+    QList<QRect> clientDisplays(const QString& clientName) const;
+    QList<QRect> clientDisplays() const;
+    // Optional per-display product names for a client, same order as
     // the rects passed to setClientDisplays() and count-aligned the same
     // way. The names come from the client's DDNM display metadata; empty
     // entries render as "<client screen name> #<index>".
+    void setClientDisplayNames(const QString& clientName, const QStringList& names);
     void setClientDisplayNames(const QStringList& names);
+    QStringList clientDisplayNames(const QString& clientName) const;
+    QStringList clientDisplayNames() const;
+    void setClientPosition(const QString& clientName, const QPoint& pos);
     void setClientPosition(const QPoint& pos);
-    QPoint clientPosition() const { return m_clientPos; }
-    QList<QRect> serverDisplays() const { return m_serverRects; }
-    QList<QRect> clientDisplays() const { return m_clientRects; }
-    QStringList clientDisplayNames() const { return m_clientDisplayNames; }
-    const QString& clientName() const { return m_clientName; }
+    QPoint clientPosition(const QString& clientName) const;
+    QPoint clientPosition() const;
+    QStringList clientNames() const;
+    QString clientName() const { return m_activeClientName; }
 
     // Label for one physical display: the OS product name when present,
     // otherwise "<screenName> #<displayIndex>" (1-based display index).
@@ -55,7 +62,7 @@ public:
     QSize sizeHint() const override;
 
 signals:
-    void clientPositionChanged(const QPoint& pos);
+    void clientPositionChanged(const QString& clientName, const QPoint& pos);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -67,14 +74,18 @@ private:
     QList<QRect> m_serverRects; // in screen-local coords, main at 0,0
     QString m_serverScreenName;
     QStringList m_serverDisplayNames;
-    QList<QRect> m_clientRects;
-    QString m_clientName;
-    QStringList m_clientDisplayNames;
-    QPoint m_clientPos; // global position of client's bounding box origin
+    struct ClientLayout {
+        QList<QRect> rects;
+        QStringList displayNames;
+        QPoint pos;
+    };
+    QMap<QString, ClientLayout> m_clients;
+    QString m_activeClientName;
     QPoint m_dragOffset;
     bool m_dragging;
     qreal m_dragScale;   // transform frozen at drag start, so the view
     QPoint m_dragViewOffset; // doesn't rescale/shift while dragging
+    QRect m_clientGlobalBounds(const ClientLayout& client) const;
     QRect m_clientGlobalBounds() const;
     // Global-to-widget transform for the current (non-dragging) layout.
     void computeTransform(qreal& scale, QPoint& offset) const;
