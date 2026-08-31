@@ -176,6 +176,8 @@ prepare_secret_snapshot_path() {
 # Freeze the exact inherited Windows OpenSSL vendor tree. Its prebuilt binaries
 # predate this release audit; any change to that tree requires a dedicated
 # Windows dependency rebuild and review rather than a broad binary exclusion.
+# The reviewed origin and scope are documented in
+# docs/history/inherited-binary-provenance.md.
 legacy_vendor_root=ext/openssl/windows
 legacy_vendor_tree=42bc69cca6dea60817f6cf9dc3225d1db9264e1e
 protected_metadata_files=
