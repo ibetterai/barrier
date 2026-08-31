@@ -31,12 +31,18 @@
 #include <mutex>
 #include <queue>
 
+namespace barrier_test {
+class EventQueueTestAccess;
+}
+
 //! Event queue
 /*!
 An event queue that implements the platform independent parts and
 delegates the platform dependent parts to a subclass.
 */
 class EventQueue : public IEventQueue {
+    friend class barrier_test::EventQueueTestAccess;
+
 public:
     EventQueue();
     virtual ~EventQueue();
@@ -182,6 +188,7 @@ private:
     FileEvents*                    m_typesForFile;
     Mutex*                        m_readyMutex;
     CondVar<bool>*                m_readyCondVar;
+    mutable UInt32                m_readyWaiterCount;
     std::queue<Event>            m_pending;
     NonBlockingStream            m_parentStream;
 };
