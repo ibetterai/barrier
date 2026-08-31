@@ -125,6 +125,10 @@ git -C "$release_work" tag -a "$automation_tag" \
 git -C "$release_work" remote add origin "$release_remote"
 git -C "$release_work" push -q origin main --tags
 automation_tag_object_sha=$(git -C "$release_work" rev-parse "$automation_tag")
+# actions/checkout replaces the local annotated tag ref with the peeled commit
+# while leaving the protected remote annotated tag intact.
+git -C "$release_work" update-ref \
+  "refs/tags/$automation_tag" "$automation_sha"
 
 resolve_output="$test_root/resolve.out"
 expect_success resolve "$resolve_output" /usr/bin/python3 "$helper" resolve \
@@ -143,6 +147,9 @@ test "$(output_value SOURCE_SHA "$resolve_output")" = "$release_source_sha" \
   || fail 'resolve returned the wrong source SHA'
 test "$(output_value AUTOMATION_SHA "$resolve_output")" = "$automation_sha" \
   || fail 'resolve returned the wrong automation SHA'
+test "$(output_value AUTOMATION_TAG_OBJECT_SHA "$resolve_output")" = \
+  "$automation_tag_object_sha" \
+  || fail 'resolve returned the wrong remote automation tag object'
 tag_object_sha=$(output_value TAG_OBJECT_SHA "$resolve_output")
 
 recheck_output="$test_root/recheck.out"
@@ -447,7 +454,7 @@ test ! -e "$nested_contact_marker" \
 automation_mover="$test_root/automation-mover"
 git clone -q "$release_remote" "$automation_mover"
 git -C "$automation_mover" tag -f -a "$automation_tag" \
-  -m 'moved automation annotation' "$automation_sha"
+  -m 'moved automation tag' "$release_source_sha"
 git -C "$automation_mover" push -q --force origin \
   "refs/tags/$automation_tag"
 expect_failure moved-automation-during-resolve remote-automation-tag-mismatch \
@@ -463,6 +470,8 @@ expect_failure moved-automation-before-upload remote-automation-tag-changed \
   --automation-tag "$automation_tag" \
   --automation-tag-object-sha "$automation_tag_object_sha" \
   --automation-sha "$automation_sha"
+git -C "$release_work" update-ref \
+  "refs/tags/$automation_tag" "$automation_tag_object_sha"
 git -C "$release_work" push -q --force origin \
   "refs/tags/$automation_tag"
 

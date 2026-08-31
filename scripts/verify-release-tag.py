@@ -617,24 +617,15 @@ def command_resolve(args: argparse.Namespace) -> None:
         tag_patch,
     ):
         raise VerificationError("automation-tag-version")
-    automation_tag_object_sha, automation_tag_commit = (
-        resolve_local_annotated_tag(
-            repo, automation_tag, "local-automation-annotated-tag"
-        )
-    )
-    if automation_tag_commit != automation_sha:
-        raise VerificationError("local-automation-tag-mismatch")
     remote_automation_object, remote_automation_commit = resolve_remote_tag(
         repo,
         remote,
         automation_tag,
         "remote-automation-annotated-tag",
     )
-    if (
-        remote_automation_object != automation_tag_object_sha
-        or remote_automation_commit != automation_sha
-    ):
+    if remote_automation_commit != automation_sha:
         raise VerificationError("remote-automation-tag-mismatch")
+    automation_tag_object_sha = remote_automation_object
 
     emit(
         [
