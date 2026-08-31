@@ -20,10 +20,23 @@
 
 namespace barrier {
 
+namespace {
+
+static const SInt16 kDisplayGeometryProtocolMinorVersion = 7;
+static const SInt16 kDisplayNamesProtocolMinorVersion = 7;
+
+} // namespace
+
+bool
+supportsDisplayGeometry(SInt16 minorVersion)
+{
+    return minorVersion >= kDisplayGeometryProtocolMinorVersion;
+}
+
 bool
 supportsDisplayNames(SInt16 minorVersion)
 {
-    return minorVersion >= kProtocolMinorVersion;
+    return minorVersion >= kDisplayNamesProtocolMinorVersion;
 }
 
 SInt16

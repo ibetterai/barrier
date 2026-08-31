@@ -119,10 +119,17 @@ public:
     */
     NetworkAddress        getServerAddress() const;
 
-    //! Test if the server negotiated protocol 1.7
+    //! Test if the server negotiated display-geometry support
     /*!
-    True when the server's hello announced a minor version of at least
-    1.7, i.e. the server understands the DDNM display-names message.
+    True when the server's hello announced a minor version that understands
+    the DDIS per-display-rectangles message.
+    */
+    bool                supportsDisplayGeometry() const;
+
+    //! Test if the server negotiated display-name support
+    /*!
+    True when the server's hello announced a minor version that understands
+    the DDNM display-names message.
     */
     bool                supportsDisplayNames() const;
 

@@ -865,10 +865,12 @@ ServerProxy::queryInfo()
     m_client->getDisplayNames(info.m_displayNames);
     sendInfo(info);
 
-    // send per-display geometry when the platform reports it (non-rectangular
-    // multi-monitor layouts).  absence lets older servers fall back to the
-    // bounding box in ClientInfo.
-    if (!info.m_displays.empty()) {
+    // Send per-display geometry only when the server negotiated the
+    // extension.  A protocol 1.6 server only understands the DINF bounding
+    // box; sending DDIS would look like an invalid message.
+    const bool sendDisplayGeometry =
+        m_client->supportsDisplayGeometry() && !info.m_displays.empty();
+    if (sendDisplayGeometry) {
         std::vector<UInt32> data;
         data.reserve(info.m_displays.size() * 4);
         for (const ScreenRect& r : info.m_displays) {
@@ -880,10 +882,11 @@ ServerProxy::queryInfo()
         ProtocolUtil::writef(m_stream, kMsgDDisplayInfo, &data);
     }
 
-    // send per-display names right after the geometry, only when the server
-    // negotiated protocol 1.7.  the payload count must match the DDIS
-    // rectangle count; older peers keep geometry-only behavior.
-    if (m_client->supportsDisplayNames() &&
+    // Send per-display names right after matching geometry, only when the
+    // peer supports the names extension.  Names without geometry cannot be
+    // matched to rectangles and must not be sent.
+    if (sendDisplayGeometry &&
+        m_client->supportsDisplayNames() &&
         !info.m_displayNames.empty() &&
         info.m_displayNames.size() == info.m_displays.size()) {
         std::vector<UInt32> data = barrier::encodeDisplayNames(
@@ -892,6 +895,7 @@ ServerProxy::queryInfo()
             ProtocolUtil::writef(m_stream, kMsgDDisplayNames, &data);
         }
     }
+
 }
 
 void

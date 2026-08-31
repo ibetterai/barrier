@@ -12,7 +12,7 @@
     <array>
         <string>/usr/bin/barrierc</string>
         <!-- Replace this IP with the IP of your barriers server -->
-        <string>127.0.0.1</string>
+        <string>198.51.100.20</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

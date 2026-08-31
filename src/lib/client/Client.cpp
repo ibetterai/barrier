@@ -250,6 +250,12 @@ Client::getDisplayNames(std::vector<std::string>& names) const
 }
 
 bool
+Client::supportsDisplayGeometry() const
+{
+    return barrier::supportsDisplayGeometry(m_serverMinorVersion);
+}
+
+bool
 Client::supportsDisplayNames() const
 {
     return barrier::supportsDisplayNames(m_serverMinorVersion);
