@@ -19,18 +19,20 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-012 | 2026-08-29 | Compatibility | Rectangular fallback for older peers | Shipped | 3.3.0 |
 | H-013 | 2026-08-29 | Fix | Freeform coordinate-rounding gap tolerance | Shipped | 3.3.1 |
 | H-014 | 2026-08-29 | Fix | Partial-edge coordinate mapping without cursor bounce | Shipped | 3.3.1 |
-| H-015 | 2026-08-29 | Fix | Improved client display-rectangle representation | Shipped | 3.3.1 |
+| H-015 | 2026-08-29 | Fix | Freeform display-rectangle handling for portrait and multi-display clients, including multiple simultaneous connections | Shipped | 3.3.1 |
 | H-016 | 2026-08-31 | Feature | Exact display-topology profiles | Shipped | 3.4.0 |
 | H-017 | 2026-08-31 | Safety | Switching pause for unknown display topologies | Shipped | 3.4.0 |
 | H-018 | 2026-08-31 | Feature | Paired Bluetooth and Bonjour proximity gating | Shipped | 3.4.0 |
 | H-019 | 2026-08-31 | Feature | User-adjustable signal thresholds with hysteresis | Shipped | 3.4.0 |
 | H-020 | 2026-08-31 | Feature | Optional pair-scoped client signal sharing | Shipped | 3.4.0 |
 | H-021 | 2026-08-31 | Feature | Rate-limited network wake for offline clients | Shipped | 3.4.0 |
-| H-022 | 2026-08-31 | Fix | Immediate recovery after topology and sleep transitions | Shipped | 3.4.0 |
-| H-023 | 2026-08-31 | Fix | Main-run-loop event capture and disabled-tap recovery | Shipped | 3.4.0 |
+| H-022 | 2026-08-31 | Fix | Automatic client reconnection after topology-driven server reloads | Shipped | 3.4.0 |
+| H-023 | 2026-08-31 | Fix | Pointer transfer after macOS sleep/wake through main-run-loop event capture and disabled-tap recovery | Shipped | 3.4.0 |
 | H-024 | 2026-08-31 | Fix | Manual server address precedence when Auto config is off | Shipped | 3.4.0 |
 | H-025 | 2026-08-31 | Fix | Deduplicated service-resolution snapshots and endpoint logs | Shipped | 3.4.0 |
 | H-026 | 2026-08-31 | Release | Pinned dependencies, deployment checks, and privacy audits | Shipped | 3.4.0 |
+| H-027 | 2026-08-31 | Fix | Preserved paired discovery metadata, selected routable server endpoints, and rejected auxiliary discovery endpoints | Shipped | 3.4.0 |
+| H-028 | 2026-08-31 | Fix | Event-queue readiness wakes every caller already waiting at startup | Shipped | 3.4.0 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.

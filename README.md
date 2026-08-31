@@ -10,8 +10,9 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
 
 ## Download
 
-- Use the [GitHub Releases](https://github.com/ibetterai/barrier/releases)
-  section to download the latest Apple Silicon macOS build or a previous build.
+- Use [GitHub Releases](https://github.com/ibetterai/barrier/releases) to
+  download the latest Apple Silicon macOS build and view reconstructed notes
+  for earlier releases.
 - See the [changelog](CHANGELOG.md) and
   [feature and fix ledger](docs/history/feature-fix-ledger.md) for the
   reconstructed public product history.

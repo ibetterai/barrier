@@ -41,6 +41,8 @@ Bug fixes
 - Fixed Apple Silicon release packaging so Qt and OpenSSL come from checksum-pinned sources built
   for macOS 12, every bundled Mach-O file is audited before signing, and release checks reject
   local home paths and concrete private IPv4 addresses from tracked text sources and final app bundles.
+- Fixed event-queue startup readiness so all callers already waiting are released when
+  initialization completes.
 
 Barrier `3.3.1` ( `2026-08-29` )
 ================================
@@ -52,7 +54,8 @@ Bug fixes
   their intended links.
 - Corrected partial-edge coordinate mapping so the pointer does not bounce back to the source
   screen.
-- Improved client display-rectangle representation in the freeform layout.
+- Improved freeform display-rectangle handling for portrait displays, multiple displays, and
+  multiple simultaneously connected clients.
 
 Barrier `3.3.0` ( `2026-08-29` )
 ================================
@@ -75,6 +78,10 @@ Features and fixes
   routing.
 - Added client display wake-on-entry, layout persistence, reliable login-session input, consistent
   scrolling, menu activation fixes, and Magic Mouse Spaces gesture forwarding.
+- Fixed cross-platform HTML clipboard encoding, restored Windows display scaling above 100%, and
+  fixed GCC 11.2 builds.
+- Improved incompatible-macOS launch guidance, updated Japanese translations, and refreshed
+  OS-support and Linux drag-and-drop guidance.
 
 Barrier `2.4.0` ( `2021-11-01` )
 ================================
