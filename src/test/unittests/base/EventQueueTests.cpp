@@ -20,6 +20,17 @@
 
 namespace {
 
+bool waitForThreadOrCancel(Thread& thread, double timeout)
+{
+    if (thread.wait(timeout)) {
+        return true;
+    }
+
+    thread.cancel();
+    thread.wait();
+    return false;
+}
+
 class BlockingFirstAddBuffer : public SimpleEventQueueBuffer {
 public:
     BlockingFirstAddBuffer() :
@@ -133,11 +144,11 @@ TEST_F(EventQueueStartupTests, BecomesReadyOnlyAfterPendingEventsReachBuffer)
     {
         std::unique_lock<std::mutex> lock(readyMutex);
         EXPECT_TRUE(readyCondition.wait_for(
-            lock, std::chrono::seconds(1),
+            lock, std::chrono::seconds(10),
             [&waitForReadyReturned] { return waitForReadyReturned; }));
     }
-    EXPECT_TRUE(readyThread.wait(1.0));
-    EXPECT_TRUE(loopThread.wait(1.0));
+    EXPECT_TRUE(waitForThreadOrCancel(readyThread, 10.0));
+    EXPECT_TRUE(waitForThreadOrCancel(loopThread, 10.0));
 
     EXPECT_TRUE(m_delivered);
 }

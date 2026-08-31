@@ -123,7 +123,8 @@ EventQueue::loop()
         }
 
         *m_readyCondVar = true;
-        m_readyCondVar->signal();
+        // Readiness is a sticky state, so every current waiter can proceed.
+        m_readyCondVar->broadcast();
     }
     LOG((CLOG_DEBUG "event queue is ready"));
 
