@@ -2,13 +2,18 @@ name: release-macos-arm64
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Annotated vMAJOR.MINOR.PATCH release tag
+        required: true
+        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: release-macos-arm64-${{ github.ref }}
+  group: release-macos-arm64-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -16,37 +21,106 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 180
     env:
+      AUTOMATION_TAG: v3.4.0-automation.1
       RELEASE_PREFIX: /tmp/barrier-release-prefix
       RELEASE_WORK_DIR: /tmp/barrier-release-work
       RELEASE_BUILD_DIR: /tmp/barrier-release-build
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Checkout release automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          path: automation
           fetch-depth: 0
-          submodules: recursive
+          persist-credentials: false
 
-      - name: Verify release provenance
+      - name: Verify release automation
+        working-directory: automation
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF" = "refs/tags/$AUTOMATION_TAG"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_PROTECTED" = true
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main
-          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
-          for required_workflow in ci.yml public-audit.yml; do
-            successful_runs=$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/$required_workflow/runs" \
-                --method GET \
-                -f head_sha="$GITHUB_SHA" \
-                -f status=completed \
-                -f per_page=100 \
-                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-            if test "$successful_runs" -le 0; then
-              echo 'required release check is not successful for this commit' >&2
-              exit 1
-            fi
-          done
+          git merge-base --is-ancestor \
+            "$GITHUB_SHA" refs/remotes/origin/main
+          scripts/verify-release-checks.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+
+      - name: Resolve immutable release tag
+        id: release_source
+        working-directory: automation
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          provenance_file="$RUNNER_TEMP/release-source.env"
+          /usr/bin/python3 scripts/verify-release-tag.py resolve \
+            --repo . \
+            --release-tag "$RELEASE_TAG_INPUT" \
+            --automation-tag "$AUTOMATION_TAG" \
+            --automation-sha "$GITHUB_SHA" \
+            --version-file-sha256 \
+              7b496edf4f4f626f6f9da9069b40437181a7121e3e342df4b0965c3096f63e98 \
+            >"$provenance_file"
+          canonical_env="$RUNNER_TEMP/release-source.github-env"
+          canonical_output="$RUNNER_TEMP/release-source.github-output"
+          /usr/bin/python3 scripts/parse-release-provenance.py \
+            --input "$provenance_file" \
+            --github-env "$canonical_env" \
+            --github-output "$canonical_output"
+          /bin/cat "$canonical_env" >>"$GITHUB_ENV"
+          /bin/cat "$canonical_output" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout immutable release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.release_source.outputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate public submodule declarations
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 ../automation/scripts/verify-release-tag.py \
+            verify-source \
+            --source-dir . \
+            --source-sha "$SOURCE_SHA" \
+            --phase pre-init \
+            >"$RUNNER_TEMP/release-submodules-pre.env"
+
+      - name: Initialize exact public submodules
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 ../automation/scripts/verify-release-tag.py \
+            initialize-submodules \
+            --source-dir . \
+            --source-sha "$SOURCE_SHA" \
+            >"$RUNNER_TEMP/release-submodules-init.env"
+
+      - name: Verify tagged release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 ../automation/scripts/verify-release-tag.py \
+            verify-source \
+            --source-dir . \
+            --source-sha "$SOURCE_SHA" \
+            --phase post-init \
+            >"$RUNNER_TEMP/release-submodules-post.env"
+          /usr/bin/python3 ../automation/scripts/verify-release-recipe-pair.py \
+            --release-tag "$RELEASE_TAG" \
+            --source-workflow .github/workflows/release-macos-arm64.yml \
+            --automation-workflow ../automation/.github/workflows/release-macos-arm64.yml
+          ../automation/scripts/verify-release-checks.sh \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$SOURCE_SHA"
 
       - name: Load locked release platform
         run: |
@@ -59,25 +133,11 @@ jobs:
           printf 'MACOS_RELEASE_ARCH=%s\n' "$MACOS_RELEASE_ARCH" >> "$GITHUB_ENV"
           printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "$MACOSX_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
 
-      - name: Restore locked dependency prefix
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.RELEASE_PREFIX }}
-          key: >-
-            barrier-release-prefix-${{ runner.os }}-${{ runner.arch }}-${{
-            hashFiles(
-              'dist/macos/release-dependencies.lock',
-              'dist/macos/qtbase-5.15.19-xcode26.patch',
-              'scripts/build-macos-release-prefix.sh',
-              'scripts/macos-macho-closure.py',
-              'scripts/scan-protected-metadata.pl',
-              'scripts/verify-macos-deployment-target.sh'
-            )
-            }}
-
-      - name: Build or verify locked dependency prefix
+      - name: Build locked dependency prefix from source
         run: |
           set -euo pipefail
+          test ! -e "$RELEASE_PREFIX"
+          test ! -e "$RELEASE_WORK_DIR"
           build_log="$RUNNER_TEMP/release-prefix-build.log"
           if ! scripts/build-macos-release-prefix.sh \
               --prefix "$RELEASE_PREFIX" \
@@ -103,6 +163,7 @@ jobs:
           export PATH="$RELEASE_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           export CPPFLAGS="-I$RELEASE_PREFIX/include"
           export LDFLAGS="-L$RELEASE_PREFIX/lib"
+          export GIT_COMMIT="$SOURCE_SHA"
           if ! "$cmake_bin" -S . -B "$RELEASE_BUILD_DIR" \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_OSX_ARCHITECTURES="$MACOS_RELEASE_ARCH" \
@@ -131,9 +192,9 @@ jobs:
           if ! "$cmake_bin" --build "$RELEASE_BUILD_DIR" --parallel 3 \
               >"$build_log" 2>&1; then
             echo 'locked release build failed' >&2
-            if ! scripts/emit-sanitized-release-diagnostics.sh \
+            if ! ../automation/scripts/emit-sanitized-release-diagnostics.sh \
                 "$build_log" \
-                "$GITHUB_WORKSPACE" \
+                "$GITHUB_WORKSPACE/source" \
                 "$RELEASE_BUILD_DIR" \
                 "$RELEASE_PREFIX" \
                 "$RUNNER_TEMP"; then
@@ -223,31 +284,56 @@ jobs:
               '^(VERIFIED_ARCH|MAX_MACOS_DEPLOYMENT_TARGET|MACHO_FILES_VERIFIED)=' \
               "$audit_log"
           scripts/public-audit.sh
+          expected_revision=${SOURCE_SHA:0:8}
+          /usr/bin/strings -a "$app/Contents/MacOS/barrier" \
+            | /usr/bin/grep -F "$expected_revision" >/dev/null
 
       - name: Create unsigned release input
         id: unsigned
         run: |
           set -euo pipefail
           app="$RELEASE_BUILD_DIR/bundle/Barrier.app"
-          short_sha=${GITHUB_SHA:0:8}
-          archive="$RUNNER_TEMP/Barrier-app-unsigned-$short_sha.zip"
+          short_sha=${SOURCE_SHA:0:8}
+          archive="$RUNNER_TEMP/Barrier-$RELEASE_TAG-macos-arm64-unsigned-$short_sha.zip"
           /usr/bin/ditto -c -k --keepParent "$app" "$archive"
           archive_sha=$(/usr/bin/shasum -a 256 "$archive" | /usr/bin/awk '{print $1}')
           version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw \
               "$app/Contents/Info.plist")
+          test "$version" = "$RELEASE_VERSION"
           printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
           {
             printf '### Unsigned macOS arm64 release input\n\n'
             printf -- "- Version: \`%s\`\n" "$version"
-            printf -- "- Commit: \`%s\`\n" "$GITHUB_SHA"
+            printf -- "- Release tag: \`%s\`\n" "$RELEASE_TAG"
+            printf -- "- Source commit: \`%s\`\n" "$SOURCE_SHA"
+            printf -- "- Automation tag: \`%s\`\n" "$AUTOMATION_TAG"
+            printf -- "- Automation commit: \`%s\`\n" "$GITHUB_SHA"
             printf -- "- Minimum macOS: \`%s\`\n" "$MACOSX_DEPLOYMENT_TARGET"
             printf -- "- SHA-256: \`%s\`\n" "$archive_sha"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Recheck immutable release provenance
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 scripts/verify-release-tag.py recheck \
+            --repo . \
+            --release-tag "$RELEASE_TAG" \
+            --tag-object-sha "$TAG_OBJECT_SHA" \
+            --source-sha "$SOURCE_SHA" \
+            --automation-tag "$AUTOMATION_TAG" \
+            --automation-tag-object-sha "$AUTOMATION_TAG_OBJECT_SHA" \
+            --automation-sha "$GITHUB_SHA" \
+            >"$RUNNER_TEMP/release-tag-recheck.env"
+          scripts/verify-release-checks.sh \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$SOURCE_SHA"
+
       - name: Upload unsigned release input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Barrier-macos-arm64-unsigned-${{ github.sha }}
+          name: Barrier-${{ steps.release_source.outputs.release_tag }}-macos-arm64-unsigned-${{ steps.release_source.outputs.source_sha }}
           path: ${{ steps.unsigned.outputs.archive }}
           if-no-files-found: error
           retention-days: 14

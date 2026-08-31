@@ -41,6 +41,10 @@ jobs:
           scripts/tests/scan-protected-metadata_test.sh
           scripts/tests/build-macos-release-prefix_diagnostics_test.sh
           scripts/tests/sanitize-release-build-log_test.sh
+          scripts/tests/parse-release-provenance_test.sh
+          scripts/tests/verify-release-checks_test.sh
+          scripts/tests/verify-release-recipe-pair_test.sh
+          scripts/tests/verify-release-tag_test.sh
           scripts/tests/verify-macos-deployment-target_test.sh
           scripts/tests/public-audit_test.sh
 
