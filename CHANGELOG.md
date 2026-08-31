@@ -5,6 +5,13 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## Unreleased
+
+### Documentation
+
+- Published the signed and notarized Barrier 3.4.0 Apple Silicon DMG and
+  documented its effective macOS 26.0 binary dependency floor.
+
 ## 3.4.0 — 2026-08-31
 
 ### Features

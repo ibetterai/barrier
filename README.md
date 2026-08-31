@@ -17,9 +17,11 @@ details, see the [upstream Barrier repository](https://github.com/debauchee/barr
   [feature and fix ledger](docs/history/feature-fix-ledger.md) for the
   reconstructed public product history.
 
-Release candidates for Barrier 3.4.0 and later target Apple Silicon and macOS
-12 or later. Before attaching a DMG, verify its Developer ID signature, Apple
-notarization ticket, stapling, and offline Gatekeeper acceptance.
+The published Barrier 3.4.0 binary targets Apple Silicon and has an effective
+macOS 26.0 minimum because of its bundled dependencies. Before attaching a
+future DMG, verify every bundled Mach-O deployment target together with its
+Developer ID signature, Apple notarization ticket, stapling, and offline
+Gatekeeper acceptance.
 
 ## What this fork adds
 
