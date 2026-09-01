@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QSettings>
 #include <QTemporaryDir>
 
@@ -21,11 +22,84 @@ class TestServerConfig : public ServerConfig
 public:
     using ServerConfig::ServerConfig;
 
+    explicit TestServerConfig(const ServerConfig& config) :
+        ServerConfig(config)
+    {
+    }
+
     void setClipboardSharingForTest(bool enabled)
     {
         setClipboardSharing(enabled);
     }
+
+    void setConfiguredScreensForTest(const QStringList& screenNames)
+    {
+        std::vector<Screen> configured(
+            static_cast<std::size_t>(numColumns() * numRows()));
+        int index = 7;
+        for (const QString& screenName : screenNames) {
+            configured.at(static_cast<std::size_t>(index++)) =
+                Screen(screenName);
+        }
+        setScreens(configured);
+    }
 };
+
+barrier::DisplayTopology storedTopology(const std::string& secondaryId,
+                                        int secondaryX)
+{
+    barrier::DisplayTopology topology;
+    topology.displays = {
+        {"internal-display", {0, 0, 1920, 1080}, 0, true},
+        {secondaryId, {secondaryX, 0, 1920, 1080}, 0, false}
+    };
+    return topology.normalized();
+}
+
+barrier::TopologyProfile storedProfile(
+    const barrier::DisplayTopology& topology,
+    const QStringList& screenNames)
+{
+    barrier::TopologyProfile profile;
+    profile.topology = topology;
+    int x = 0;
+    for (const QString& screenName : screenNames) {
+        profile.positions[screenName] = std::make_pair(x, 0);
+        profile.displayRects[screenName] = {QRect(0, 0, 1920, 1080)};
+        x += 1920;
+    }
+    return profile;
+}
+
+void writeConfiguredScreens(QSettings& settings,
+                            const QStringList& screenNames)
+{
+    settings.beginGroup("internalConfig");
+    settings.setValue("numColumns", 5);
+    settings.setValue("numRows", 3);
+    settings.beginWriteArray("screens", 15);
+    int index = 7;
+    for (const QString& screenName : screenNames) {
+        settings.setArrayIndex(index++);
+        Screen(screenName).saveSettings(settings);
+    }
+    settings.endArray();
+    settings.endGroup();
+    settings.sync();
+}
+
+QString serializedConfig(ServerConfig& config, QTemporaryDir& directory)
+{
+    const QString configPath = directory.filePath("barrier.conf");
+    if (!config.save(configPath)) {
+        return QString();
+    }
+    QFile file(configPath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return QString();
+    }
+    return QString::fromUtf8(file.readAll());
+}
 
 } // namespace
 
@@ -199,6 +273,119 @@ TEST(ServerConfigPersistenceTests,
     EXPECT_FALSE(relaunchedSettings.contains("topologyProfiles/payload"));
     EXPECT_FALSE(relaunchedSettings.contains(
         "topologyProfiles.pending/payload"));
+}
+
+TEST(ServerConfigPersistenceTests,
+     loadingChangedScreenSetPrunesRemovedScreenFromEveryProfile)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    QSettings settings(directory.filePath("barrier.ini"), QSettings::IniFormat);
+    writeConfiguredScreens(settings, {"server", "client"});
+
+    const barrier::DisplayTopology horizontal =
+        storedTopology("external-horizontal", 1920);
+    const barrier::DisplayTopology vertical =
+        storedTopology("external-vertical", 0);
+    barrier::TopologyProfiles profiles;
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(
+            horizontal, {"server", "client", "removed-client"})));
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(
+            vertical, {"server", "client", "removed-client"})));
+    ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
+              barrier::TopologyProfileStore::save(settings, profiles));
+
+    ServerConfig config(&settings, 5, 3, "server", nullptr);
+
+    ASSERT_EQ(2u, config.topologyProfiles().size());
+    for (const auto& stored : config.topologyProfiles()) {
+        EXPECT_EQ(2u, stored.second.positions.size());
+        EXPECT_EQ(2u, stored.second.displayRects.size());
+        EXPECT_EQ(0u, stored.second.positions.count("removed-client"));
+        EXPECT_EQ(0u, stored.second.displayRects.count("removed-client"));
+    }
+    const QString output = serializedConfig(config, directory);
+    ASSERT_FALSE(output.isEmpty());
+    EXPECT_FALSE(output.contains(
+        QString::fromLatin1(QByteArray("removed-client").toHex())));
+}
+
+TEST(ServerConfigPersistenceTests,
+     loadingChangedScreenSetDiscardsProfilesMissingNewScreen)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    QSettings settings(directory.filePath("barrier.ini"), QSettings::IniFormat);
+    writeConfiguredScreens(settings, {"server", "client", "new-client"});
+
+    const barrier::DisplayTopology horizontal =
+        storedTopology("external-horizontal", 1920);
+    const barrier::DisplayTopology vertical =
+        storedTopology("external-vertical", 0);
+    barrier::TopologyProfiles profiles;
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(horizontal, {"server", "client"})));
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(vertical, {"server", "client"})));
+    ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
+              barrier::TopologyProfileStore::save(settings, profiles));
+
+    ServerConfig config(&settings, 5, 3, "server", nullptr);
+    config.setCurrentTopology(horizontal);
+
+    EXPECT_TRUE(config.topologyProfiles().empty());
+    EXPECT_FALSE(config.isCurrentTopologyKnown());
+    const QString output = serializedConfig(config, directory);
+    ASSERT_FALSE(output.isEmpty());
+    EXPECT_FALSE(output.contains("section: topology-profiles"));
+}
+
+TEST(ServerConfigPersistenceTests,
+     acceptedScreenRemovalReconcilesLiveAndDurableProfiles)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString settingsPath = directory.filePath("barrier.ini");
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    writeConfiguredScreens(settings, {"server", "client", "removed-client"});
+
+    const barrier::DisplayTopology horizontal =
+        storedTopology("external-horizontal", 1920);
+    const barrier::DisplayTopology vertical =
+        storedTopology("external-vertical", 0);
+    barrier::TopologyProfiles profiles;
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(
+            horizontal, {"server", "client", "removed-client"})));
+    ASSERT_TRUE(barrier::putTopologyProfile(
+        profiles, storedProfile(
+            vertical, {"server", "client", "removed-client"})));
+    ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
+              barrier::TopologyProfileStore::save(settings, profiles));
+
+    ServerConfig liveConfig(&settings, 5, 3, "server", nullptr);
+    TestServerConfig editedConfig(liveConfig);
+    editedConfig.setConfiguredScreensForTest({"server", "client"});
+    QString error;
+
+    ASSERT_TRUE(liveConfig.commitAcceptedConfiguration(
+        editedConfig, &error)) << error.toStdString();
+    ASSERT_EQ(2u, liveConfig.topologyProfiles().size());
+    for (const auto& stored : liveConfig.topologyProfiles()) {
+        EXPECT_EQ(0u, stored.second.positions.count("removed-client"));
+        EXPECT_EQ(0u, stored.second.displayRects.count("removed-client"));
+    }
+
+    QSettings relaunchedSettings(settingsPath, QSettings::IniFormat);
+    ServerConfig relaunchedConfig(
+        &relaunchedSettings, 5, 3, "server", nullptr);
+    ASSERT_EQ(2u, relaunchedConfig.topologyProfiles().size());
+    for (const auto& stored : relaunchedConfig.topologyProfiles()) {
+        EXPECT_EQ(0u, stored.second.positions.count("removed-client"));
+        EXPECT_EQ(0u, stored.second.displayRects.count("removed-client"));
+    }
 }
 
 TEST(ServerConfigPersistenceTests, parsesClientDisplayRectsLogLine)

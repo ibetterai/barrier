@@ -13,6 +13,7 @@ set(GUI_COMMON_SOURCE_FILES
     src/ClientIdentityResolverQueue.cpp
     src/ClientPresenceRegistry.cpp
     src/FreeformLayoutSettings.cpp
+    src/ProcessRestartPolicy.cpp
     src/ProximityConfig.cpp
     src/ProximityConnectionPolicy.cpp
     src/ProximitySignalFilter.cpp
@@ -28,6 +29,7 @@ set(GUI_COMMON_HEADER_FILES
     src/ClientIdentityResolverQueue.h
     src/ClientPresenceRegistry.h
     src/FreeformLayoutSettings.h
+    src/ProcessRestartPolicy.h
     src/ProximityConfig.h
     src/ProximityConnectionPolicy.h
     src/ProximitySignalFilter.h
@@ -214,6 +216,7 @@ if (BARRIER_BUILD_TESTS)
         test/ServerConfigPersistenceTests.cpp
         test/ProximityConfigTests.cpp
         test/ProximityConnectionPolicyTests.cpp
+        test/ProcessRestartPolicyTests.cpp
         test/ProximitySettingsDialogUiTests.cpp
         test/ProximitySignalFilterTests.cpp
         test/TopologyProfileStoreTests.cpp

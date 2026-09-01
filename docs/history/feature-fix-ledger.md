@@ -33,6 +33,8 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-026 | 2026-08-31 | Release | Pinned dependencies, deployment checks, and privacy audits | Shipped | 3.4.0 |
 | H-027 | 2026-08-31 | Fix | Preserved paired discovery metadata, selected routable server endpoints, and rejected auxiliary discovery endpoints | Shipped | 3.4.0 |
 | H-028 | 2026-08-31 | Fix | Event-queue readiness wakes every caller already waiting at startup | Shipped | 3.4.0 |
+| H-029 | 2026-08-31 | Fix | Reconciled saved topology profiles after configured screens change | Shipped | 3.4.1 |
+| H-030 | 2026-08-31 | Fix | Explicit Stop cancels queued restarts and configuration failures stop retrying | Shipped | 3.4.1 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.

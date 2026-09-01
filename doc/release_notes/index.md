@@ -3,6 +3,18 @@ Release notes
 
 [comment]: <> (towncrier release notes start)
 
+Barrier `3.4.1` ( `2026-08-31` )
+================================
+
+Bug fixes
+---------
+
+- Reconciled every saved display-topology profile when configured screens change. Removed screens
+  are pruned from compatible profiles, while profiles missing a newly configured screen are
+  discarded instead of producing a configuration that the server cannot read.
+- Made Stop cancel pending automatic restarts. Configuration-read failures now stop retrying and
+  show guidance to repair the screen layout before starting again.
+
 Barrier `3.4.0` ( `2026-08-31` )
 ================================
 

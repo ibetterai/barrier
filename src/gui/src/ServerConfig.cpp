@@ -93,6 +93,17 @@ bool restoreAcceptedServerConfigSnapshot(
     return settings.status() == QSettings::NoError;
 }
 
+QStringList configuredScreenNames(const std::vector<Screen>& screens)
+{
+    QStringList names;
+    for (const Screen& screen : screens) {
+        if (!screen.isNull()) {
+            names.append(screen.name());
+        }
+    }
+    return names;
+}
+
 } // namespace
 
 ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
@@ -277,6 +288,12 @@ bool ServerConfig::commitAcceptedConfiguration(
         return false;
     }
 
+    if (!barrier::reconcileTopologyProfilesToScreens(
+            edited.m_topologyProfiles,
+            configuredScreenNames(edited.screens()), error)) {
+        return false;
+    }
+
     QString saveError;
     QMap<QString, QVariant> snapshot;
     bool saved = false;
@@ -374,6 +391,11 @@ bool ServerConfig::saveSettings(QString* error)
                 ? QStringLiteral("saved display profiles are unavailable")
                 : m_topologyProfileError;
         }
+        return false;
+    }
+
+    if (!barrier::reconcileTopologyProfilesToScreens(
+            m_topologyProfiles, configuredScreenNames(screens()), error)) {
         return false;
     }
 
@@ -513,6 +535,17 @@ void ServerConfig::loadSettings()
         m_topologyProfiles.clear();
         qWarning() << "Ignoring malformed display topology profiles:"
                    << m_topologyProfileError;
+    }
+    else {
+        QString reconciliationError;
+        if (!barrier::reconcileTopologyProfilesToScreens(
+                m_topologyProfiles, configuredScreenNames(screens()),
+                &reconciliationError)) {
+            m_topologyProfiles.clear();
+            qWarning() << "Ignoring display topology profiles for an invalid "
+                          "configured screen list:"
+                       << reconciliationError;
+        }
     }
 }
 
@@ -659,7 +692,12 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     }
 
     outStream << "end" << endl << endl;
-    barrier::writeTopologyProfiles(outStream, config.m_topologyProfiles);
+    barrier::TopologyProfiles topologyProfiles = config.m_topologyProfiles;
+    if (!barrier::reconcileTopologyProfilesToScreens(
+            topologyProfiles, configuredScreenNames(config.screens()))) {
+        topologyProfiles.clear();
+    }
+    barrier::writeTopologyProfiles(outStream, topologyProfiles);
 
 
     outStream << "section: options" << endl;
