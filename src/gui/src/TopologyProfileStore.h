@@ -52,6 +52,11 @@ bool restrictTopologyProfileToScreens(
     const QStringList& screenNames,
     QString* error = nullptr);
 
+bool reconcileTopologyProfilesToScreens(
+    TopologyProfiles& profiles,
+    const QStringList& screenNames,
+    QString* error = nullptr);
+
 TopologyProfileSelection selectTopologyProfile(
     const TopologyProfiles& profiles,
     const DisplayTopology& topology,

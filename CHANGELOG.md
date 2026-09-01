@@ -5,6 +5,17 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## 3.4.1 — 2026-08-31
+
+### Bug fixes
+
+- Reconciled every saved display-topology profile when configured screens
+  change. Removed screens are pruned from compatible profiles, while profiles
+  missing a newly configured screen are discarded instead of producing an
+  invalid server configuration.
+- Made Stop cancel pending automatic restarts and stopped retrying after a
+  configuration-read failure, with actionable guidance in the GUI and log.
+
 ## 3.4.0 — 2026-08-31
 
 ### Features

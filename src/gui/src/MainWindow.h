@@ -39,6 +39,7 @@
 #include "ProximityConfig.h"
 #include "ProximityConnectionPolicy.h"
 #include "ProximitySignalFilter.h"
+#include "ProcessRestartPolicy.h"
 #include "IpcClient.h"
 #include "Ipc.h"
 #include "LogWindow.h"
@@ -182,6 +183,7 @@ public slots:
         void resetTopologyStatusSession();
         void processLogChunk(const QString& text, QString& buffer);
         void startBarrierChild();
+        void enterStoppedIntent();
         void stopBarrierChild(bool proximityPolicyStop = false);
         bool isBarrierChildRunning() const;
 #if defined(Q_OS_MAC)
@@ -250,6 +252,8 @@ public slots:
         CommandProcess* m_BonjourInstall;
         bool m_SuppressEmptyServerWarning;
         qRuningState m_ExpectedRunningState;
+        barrier::ProcessRestartPolicy m_ProcessRestartPolicy;
+        QTimer m_ProcessRestartTimer;
         QMutex m_StopDesktopMutex;
         SslCertificate* m_pSslCertificate;
         QStringList m_PendingClientNames;

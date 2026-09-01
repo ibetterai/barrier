@@ -82,6 +82,7 @@ static const char barrierConfigName[] = "barrier.conf";
 static const QString barrierConfigFilter(QObject::tr("Barrier Configurations (*.conf)"));
 #endif
 static const QString barrierConfigOpenFilter(barrierConfigFilter + ";;" + allFilesFilter);
+constexpr int barrierRestartDelayMilliseconds = 1000;
 static const QString barrierConfigSaveFilter(barrierConfigFilter);
 
 namespace {
@@ -201,6 +202,23 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     setAttribute(Qt::WA_X11NetWmWindowTypeDialog, true);
 
     setupUi(this);
+    m_ProcessRestartTimer.setInterval(barrierRestartDelayMilliseconds);
+    m_ProcessRestartTimer.setSingleShot(true);
+    connect(
+        &m_ProcessRestartTimer, &QTimer::timeout,
+        this,
+        [this]() {
+            if (m_ExpectedRunningState == kStarted &&
+                m_ProcessRestartPolicy.takeScheduledRetry()) {
+#if defined(Q_OS_MAC)
+                if (proximityClientEnabled()) {
+                    reconcileProximityClient();
+                    return;
+                }
+#endif
+                startBarrierChild();
+            }
+        });
 #if defined(Q_OS_MAC)
     m_pProximityController = new MacProximityController(this);
     m_ProximityClock.start();
@@ -326,6 +344,8 @@ MainWindow::~MainWindow()
 {
     if (appConfig().processMode() == Desktop) {
         m_ExpectedRunningState = kStopped;
+        m_ProcessRestartPolicy.requestStop();
+        m_ProcessRestartTimer.stop();
         stopDesktop();
     }
 
@@ -1265,6 +1285,8 @@ void MainWindow::proofreadInfo()
 void MainWindow::startBarrier()
 {
     m_ExpectedRunningState = kStarted;
+    m_ProcessRestartPolicy.requestStart();
+    m_ProcessRestartTimer.stop();
 #if defined(Q_OS_MAC)
     barrier::ProximityPairing presencePairing;
     if (m_ProximityConfig.pairing(presencePairing) &&
@@ -1404,15 +1426,10 @@ void MainWindow::startBarrierChild()
         barrierProcess()->start(app, args);
         if (!barrierProcess()->waitForStarted())
         {
+            enterStoppedIntent();
+            setBarrierState(barrierDisconnected);
             show();
             QMessageBox::warning(this, tr("Program can not be started"), QString(tr("The executable<br><br>%1<br><br>could not be successfully started, although it does exist. Please check if you have sufficient permissions to run this program.").arg(app)));
-#if defined(Q_OS_MAC)
-            if (proximityClientEnabled()) {
-                m_ExpectedRunningState = kStopped;
-                m_ProximityChildRunning = false;
-                reconcileProximityClient();
-            }
-#endif
             return;
         }
 #if defined(Q_OS_MAC)
@@ -1600,7 +1617,20 @@ bool MainWindow::serverArgs(QStringList& args, QString& app)
 
 void MainWindow::stopBarrier()
 {
+    enterStoppedIntent();
+#if defined(Q_OS_MAC)
+    if (proximityClientEnabled()) {
+        return;
+    }
+#endif
+    stopBarrierChild();
+}
+
+void MainWindow::enterStoppedIntent()
+{
     m_ExpectedRunningState = kStopped;
+    m_ProcessRestartPolicy.requestStop();
+    m_ProcessRestartTimer.stop();
 #if defined(Q_OS_MAC)
     barrier::ProximityPairing presencePairing;
     if (m_ProximityConfig.pairing(presencePairing) &&
@@ -1610,16 +1640,12 @@ void MainWindow::stopBarrier()
     m_ProximityManualOverride = false;
     m_ProximityProtocolConnected = false;
     m_ProximityRestartTimer.stop();
-    m_ProximityRestartPolicy.updateEligibility(false);
+    m_ProximityRestartPolicy.reset();
     if (m_pProximityOverrideAction != NULL) {
         m_pProximityOverrideAction->setText(tr("Connect Anyway"));
     }
     configureProximityController();
-    if (proximityClientEnabled()) {
-        return;
-    }
 #endif
-    stopBarrierChild();
 }
 
 void MainWindow::stopBarrierChild(bool proximityPolicyStop)
@@ -1733,7 +1759,6 @@ void MainWindow::barrierFinished(int exitCode, QProcess::ExitStatus exitStatus)
         exitClassification.logDisposition ==
         barrier::ProximityProcessExitLogDisposition::ExpectedPolicyStop;
 #else
-    Q_UNUSED(exitStatus);
     const bool expectedForcedStop = false;
 #endif
 
@@ -1752,6 +1777,14 @@ void MainWindow::barrierFinished(int exitCode, QProcess::ExitStatus exitStatus)
     m_ProximityProtocolConnected = false;
     m_ProximityRunningEndpoint.clear();
     if (stoppedByReconciliation) {
+        return;
+    }
+    if (exitStatus == QProcess::NormalExit && exitCode == kExitConfig) {
+        enterStoppedIntent();
+        setBarrierState(barrierDisconnected);
+        setStatus(tr("Configuration error. Repair the Barrier screen layout, then click Start."));
+        appendLogError(tr("Barrier stopped because its configuration could not be read. "
+                          "Open Configure Server, repair the screen layout, then click Start."));
         return;
     }
     if (proximityClientEnabled()) {
@@ -1783,12 +1816,22 @@ void MainWindow::barrierFinished(int exitCode, QProcess::ExitStatus exitStatus)
     }
 #endif
 
-    if (m_ExpectedRunningState == kStarted) {
-        QTimer::singleShot(1000, this, SLOT(startBarrier()));
+    switch (m_ProcessRestartPolicy.childExited(
+        exitCode, exitStatus == QProcess::NormalExit)) {
+    case barrier::ProcessExitAction::RetryAfterDelay:
+        m_ProcessRestartTimer.start();
         appendLogInfo(QString("detected process not running, auto restarting"));
-    }
-    else {
+        break;
+    case barrier::ProcessExitAction::StopForConfigurationError:
+        enterStoppedIntent();
         setBarrierState(barrierDisconnected);
+        setStatus(tr("Configuration error. Repair the Barrier screen layout, then click Start."));
+        appendLogError(tr("Barrier stopped because its configuration could not be read. "
+                          "Open Configure Server, repair the screen layout, then click Start."));
+        break;
+    case barrier::ProcessExitAction::Ignore:
+        setBarrierState(barrierDisconnected);
+        break;
     }
 }
 

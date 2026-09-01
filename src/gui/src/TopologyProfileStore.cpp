@@ -13,6 +13,7 @@
 #include <QDataStream>
 #include <QIODevice>
 #include <QRect>
+#include <QSet>
 #include <QSettings>
 #include <QTextStream>
 #include <QVariant>
@@ -436,6 +437,37 @@ bool restrictTopologyProfileToScreens(
         return false;
     }
     profile = std::move(restricted);
+    return true;
+}
+
+bool reconcileTopologyProfilesToScreens(
+    TopologyProfiles& profiles,
+    const QStringList& screenNames,
+    QString* error)
+{
+    QSet<QString> configuredNames;
+    for (const QString& screenName : screenNames) {
+        if (screenName.isEmpty() || configuredNames.contains(screenName)) {
+            setError(error, QStringLiteral(
+                "configured display names must be unique and non-empty"));
+            return false;
+        }
+        configuredNames.insert(screenName);
+    }
+
+    for (TopologyProfiles::iterator stored = profiles.begin();
+         stored != profiles.end();) {
+        TopologyProfile reconciled = stored->second;
+        if (!restrictTopologyProfileToScreens(
+                reconciled, screenNames, nullptr)) {
+            stored = profiles.erase(stored);
+            continue;
+        }
+        stored->second = std::move(reconciled);
+        ++stored;
+    }
+
+    setError(error, QString());
     return true;
 }
 
