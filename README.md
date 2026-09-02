@@ -8,19 +8,19 @@ display-routing behavior, and compatibility fixes for this fork. For general
 Barrier usage, supported platforms, FAQ, source history, and upstream project
 details, see the [upstream Barrier repository](https://github.com/debauchee/barrier).
 
-## Why Barrier 3.4.0?
+## Why this new fork?
 
 **Your desk is not always a straight row of screens, and it does not stay the
-same shape. Barrier 3.4.0 is built for that reality.**
+same shape. This new fork is built for that reality.**
 
 [Apple Universal Control](https://support.apple.com/guide/mac-help/mchl412faecf/mac)
-is convenient when nearby Macs and iPads use the same Apple Account. Barrier
-3.4.0 tackles a different class of setup: several physical displays, a server
+is convenient when nearby Macs and iPads use the same Apple Account. This new
+fork tackles a different class of setup: several physical displays, a server
 Mac that moves between desks, monitor combinations that change when you dock or
 close a lid, client displays that should be allowed to sleep, and existing
 Windows or Linux machines that still run Legacy Barrier.
 
-| Real-world setup | What Barrier 3.4.0 does | Why it matters |
+| Real-world setup | What this new fork does | Why it matters |
 | --- | --- | --- |
 | Screens form an L-shape or meet along only part of an edge | Models supported macOS displays as real rectangles and routes between modern fork peers through the edge segments that physically touch | The pointer crosses where the monitors meet instead of treating a multi-display Mac as one large rectangle |
 | The server Mac travels with you | An opt-in macOS client watches for its explicitly paired server using configurable Bluetooth signal thresholds, matching Bonjour identity, and topology readiness | Take the server away and the client waits; bring that server back nearby and the normal Barrier connection can resume automatically |
@@ -28,7 +28,7 @@ Windows or Linux machines that still run Legacy Barrier.
 | An unused client display goes to sleep | Wakes a connected macOS client display when the pointer enters; an offline Mac can also receive a best-effort Bonjour network-wake request when **Wake for network access** is enabled | Barrier does not need every client display kept bright all day just to remain useful |
 | The desk includes older Windows, Linux, or macOS Barrier peers | Negotiates Legacy Barrier 2.4-compatible protocol behavior while modern 3.x peers retain enhanced display geometry | Keep the machines you already use instead of requiring an all-Apple desk or a simultaneous upgrade |
 
-Universal Control may already cover a fixed Mac-and-iPad desk. Barrier 3.4.0 is
+Universal Control may already cover a fixed Mac-and-iPad desk. This new fork is
 for the desk that changes shape, crosses operating systems, or needs explicit
 control over when and where machines connect.
 
