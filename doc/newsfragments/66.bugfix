@@ -1,0 +1,1 @@
+Normalized bundled runpaths (trailing-slash framework runpaths, absolute prefix lib dir) before the release audit so the public disk image builds.

@@ -5,6 +5,15 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## 3.4.7 — 2026-09-03
+
+### Bug fixes
+
+- Normalized bundled runpaths before the release audit: source-built Qt
+  frameworks carry trailing-slash runpaths the audit rejects, and the linker
+  leaks the absolute dependency-prefix lib dir into the GUI binary. No
+  product code changes.
+
 ## 3.4.6 — 2026-09-03
 
 ### Bug fixes

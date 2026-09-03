@@ -34,6 +34,14 @@ RECIPES = {
         "automation_workflow_sha256":
             "1cac12cb71accb97018d896cf260d9df5df61cecc99f6b50c676b6c05541adc2",
     },
+    # v3.4.7 carries the rpath-normalization bundling fix, so its tag tree
+    # and the automation tree share one workflow file by construction.
+    "v3.4.7": {
+        "source_workflow_sha256":
+            "4ca8a435bd7f12834224a0ab8c2dda27d570efa249f40c7c27ca8e4a4bf184e0",
+        "automation_workflow_sha256":
+            "4ca8a435bd7f12834224a0ab8c2dda27d570efa249f40c7c27ca8e4a4bf184e0",
+    },
 }
 MAX_WORKFLOW_BYTES = 128 * 1024
 
