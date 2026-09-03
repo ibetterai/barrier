@@ -29,10 +29,15 @@
 // first instance of a virtual key code maps to the KeyID that we
 // want to generate for that code.  The others are for mapping
 // different KeyIDs to a single key code.
-static const UInt32 s_shiftVK    = kVK_Shift;
-static const UInt32 s_controlVK  = kVK_Control;
-static const UInt32 s_altVK      = kVK_Option;
-static const UInt32 s_superVK    = kVK_Command;
+static const UInt32 s_shiftVK    = kVK_Shift; // left Shift (56)
+static const UInt32 s_shiftVK_R  = 60; // right Shift
+static const UInt32 s_controlVK  = kVK_Control; // left Control (59)
+static const UInt32 s_controlVK_R = 62; // right Control
+static const UInt32 s_altVK      = kVK_Option; // left Option (58)
+static const UInt32 s_altVK_R    = 61; // right Option
+static const UInt32 s_superVK    = kVK_Command; // left Command (55)
+static const UInt32 s_superVK_R  = 54; // right Command
+static const UInt32 s_fnVK       = kVK_Function; // Function/Globe (63)
 static const UInt32 s_capsLockVK = kVK_CapsLock;
 static const UInt32 s_numLockVK  = kVK_ANSI_KeypadClear; // 71
 
@@ -104,19 +109,19 @@ static const KeyEntry    s_controlKeys[] = {
     // virtual key 110 is fn+enter and i have no idea what that's supposed
     // to map to.  also the enter key with numlock on is a modifier but i
     // don't know which.
-
-    // modifier keys.  OS X doesn't seem to support right handed versions
-    // of modifier keys so we map them to the left handed versions.
+    // modifier keys.  left and right variants use distinct virtual key
+    // codes so each physical key gets its own KeyButton and KeyID.
     { kKeyShift_L,        s_shiftVK },
-    { kKeyShift_R,        s_shiftVK }, // 60
+    { kKeyShift_R,        s_shiftVK_R },
     { kKeyControl_L,    s_controlVK },
-    { kKeyControl_R,    s_controlVK }, // 62
+    { kKeyControl_R,    s_controlVK_R },
     { kKeyAlt_L,        s_altVK },
-    { kKeyAlt_R,        s_altVK },
+    { kKeyAlt_R,        s_altVK_R },
     { kKeySuper_L,        s_superVK },
-    { kKeySuper_R,        s_superVK }, // 61
+    { kKeySuper_R,        s_superVK_R },
     { kKeyMeta_L,        s_superVK },
-    { kKeyMeta_R,        s_superVK }, // 61
+    { kKeyMeta_R,        s_superVK_R },
+    { kKeyFunction,        s_fnVK },
 
     // toggle modifiers
     { kKeyNumLock,        s_numLockVK },
@@ -802,10 +807,66 @@ void
 OSXKeyState::handleModifierKeys(void* target,
                 KeyModifierMask oldMask, KeyModifierMask newMask)
 {
-    // compute changed modifiers
-    KeyModifierMask changed = (oldMask ^ newMask);
+    static const UInt32 kUnknownKeycode = 0xffffffffu;
+    handleModifierKeysEx(target, oldMask, newMask, kUnknownKeycode, 0);
+}
 
-    // synthesize changed modifier keys
+void
+OSXKeyState::handleModifierKeysEx(void* target,
+                KeyModifierMask oldMask, KeyModifierMask newMask,
+                UInt32 virtualKey, CGEventFlags)
+{
+    // Physical left/right/Fn keys share one mask bit (or, for Fn, have no
+    // bit at all), so the FlagsChanged key code decides which KeyID a
+    // press or release belongs to.  Direction comes from physical tracking:
+    // a FlagsChanged for a tracked key is its release, otherwise its press.
+    struct PhysicalKey { UInt32 m_vk; KeyID m_id; KeyModifierMask m_mask; };
+    static const PhysicalKey s_physicalKeys[] = {
+        { s_shiftVK,     kKeyShift_L,   KeyModifierShift   },
+        { s_shiftVK_R,   kKeyShift_R,   KeyModifierShift   },
+        { s_controlVK,   kKeyControl_L, KeyModifierControl },
+        { s_controlVK_R, kKeyControl_R, KeyModifierControl },
+        { s_altVK,       kKeyAlt_L,     KeyModifierAlt     },
+        { s_altVK_R,     kKeyAlt_R,     KeyModifierAlt     },
+        { s_superVK,     kKeySuper_L,   KeyModifierSuper   },
+        { s_superVK_R,   kKeySuper_R,   KeyModifierSuper   },
+    };
+
+    KeyModifierMask handled = 0;
+    if (virtualKey == s_fnVK) {
+        // Fn/Globe has no mask bit; it is a plain key press and release.
+        bool down = (m_physicalModifiersDown.count(virtualKey) == 0);
+        if (down) {
+            m_physicalModifiersDown.insert(virtualKey);
+        }
+        else {
+            m_physicalModifiersDown.erase(virtualKey);
+        }
+        handleModifierKey(target, virtualKey, kKeyFunction, down, newMask);
+    }
+    else {
+        for (size_t i = 0;
+             i < sizeof(s_physicalKeys) / sizeof(s_physicalKeys[0]); ++i) {
+            if (s_physicalKeys[i].m_vk == virtualKey) {
+                bool down = (m_physicalModifiersDown.count(virtualKey) == 0);
+                if (down) {
+                    m_physicalModifiersDown.insert(virtualKey);
+                }
+                else {
+                    m_physicalModifiersDown.erase(virtualKey);
+                }
+                handleModifierKey(target, virtualKey, s_physicalKeys[i].m_id,
+                                  down, newMask);
+                handled |= s_physicalKeys[i].m_mask;
+                break;
+            }
+        }
+    }
+
+    // Reconcile mask bits this key code did not account for.  This keeps
+    // the legacy behavior for CapsLock, NumLock, and events whose key
+    // code is unknown.
+    KeyModifierMask changed = (oldMask ^ newMask) & ~handled;
     if ((changed & KeyModifierShift) != 0) {
         handleModifierKey(target, s_shiftVK, kKeyShift_L,
                             (newMask & KeyModifierShift) != 0, newMask);
@@ -829,6 +890,38 @@ OSXKeyState::handleModifierKeys(void* target,
     if ((changed & KeyModifierNumLock) != 0) {
         handleModifierKey(target, s_numLockVK, kKeyNumLock,
                             (newMask & KeyModifierNumLock) != 0, newMask);
+    }
+
+    // Drop stale physical state: a cleared mask bit means no physical key
+    // of that modifier can still be down (e.g. a release seen while the
+    // event tap was disabled).  Never synthesize presses here; a set bit
+    // with no tracked key is resolved by the next FlagsChanged transition.
+    static const struct { KeyModifierMask m_mask; UInt32 m_vks[2]; } s_reconcile[] = {
+        { KeyModifierShift,   { s_shiftVK, s_shiftVK_R } },
+        { KeyModifierControl, { s_controlVK, s_controlVK_R } },
+        { KeyModifierAlt,     { s_altVK, s_altVK_R } },
+        { KeyModifierSuper,   { s_superVK, s_superVK_R } },
+    };
+    for (size_t i = 0;
+         i < sizeof(s_reconcile) / sizeof(s_reconcile[0]); ++i) {
+        if ((newMask & s_reconcile[i].m_mask) != 0) {
+            continue;
+        }
+        for (size_t k = 0; k < 2; ++k) {
+            UInt32 vk = s_reconcile[i].m_vks[k];
+            if (m_physicalModifiersDown.erase(vk) == 0) {
+                continue;
+            }
+            KeyID id = kKeyNone;
+            for (size_t j = 0;
+                 j < sizeof(s_physicalKeys) / sizeof(s_physicalKeys[0]); ++j) {
+                if (s_physicalKeys[j].m_vk == vk) {
+                    id = s_physicalKeys[j].m_id;
+                    break;
+                }
+            }
+            handleModifierKey(target, vk, id, false, newMask);
+        }
     }
 }
 

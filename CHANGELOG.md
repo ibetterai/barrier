@@ -5,6 +5,16 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## 3.4.2 — 2026-09-03
+
+### Bug fixes
+
+- Forwarded every macOS server key to the client while the mouse is on the
+  client display. Lone Fn/Globe presses, left/right Command, Option, Shift,
+  and Control presses, and brightness keys are now delivered instead of being
+  swallowed, and modifiers held across a screen switch are replayed to the
+  newly entered screen. Only registered Barrier hotkeys stay on the server.
+
 ## 3.4.1 — 2026-08-31
 
 ### Bug fixes

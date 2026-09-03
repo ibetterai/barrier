@@ -35,6 +35,7 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-028 | 2026-08-31 | Fix | Event-queue readiness wakes every caller already waiting at startup | Shipped | 3.4.0 |
 | H-029 | 2026-08-31 | Fix | Reconciled saved topology profiles after configured screens change | Shipped | 3.4.1 |
 | H-030 | 2026-08-31 | Fix | Explicit Stop cancels queued restarts and configuration failures stop retrying | Shipped | 3.4.1 |
+| H-031 | 2026-09-03 | Fix | Forwarded Fn/Globe, left/right modifiers, and brightness keys to the client with held-modifier replay on screen switch | Shipped | 3.4.2 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.

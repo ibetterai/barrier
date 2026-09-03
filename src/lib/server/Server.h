@@ -397,6 +397,11 @@ private:
     void                onKeyUp(KeyID, KeyModifierMask, KeyButton,
                             const char* screens);
     void                onKeyRepeat(KeyID, KeyModifierMask, SInt32, KeyButton);
+    // Track physically held modifiers from the key event stream so they
+    // can be replayed to (and released from) a secondary on screen switch.
+    void                trackModifierDown(KeyID, KeyModifierMask, KeyButton);
+    void                trackModifierUp(KeyButton);
+    void                sendTrackedModifiers(BaseClientProxy*, bool down);
     void                onMouseDown(ButtonID);
     void                onMouseUp(ButtonID);
     bool                onMouseMovePrimary(SInt32 x, SInt32 y);
@@ -466,12 +471,16 @@ private:
     ClientList            m_clients;
     ClientSet            m_clientSet;
 
-    // all old connections that we're waiting to hangup
-    typedef std::map<BaseClientProxy*, EventQueueTimer*> OldClients;
-    OldClients            m_oldClients;
-
     // the client with focus
     BaseClientProxy*    m_active;
+    // Modifiers physically held on the primary screen, keyed by KeyButton.
+    // Replayed as key downs when entering a secondary and released when
+    // leaving it, so keys held across a screen switch are not lost.
+    typedef std::map<KeyButton, std::pair<KeyID, KeyModifierMask>>
+        PressedModifiers;
+    PressedModifiers    m_pressedModifiers;
+    typedef std::map<BaseClientProxy*, EventQueueTimer*> OldClients;
+    OldClients            m_oldClients;
 
     // the sequence number of enter messages
     UInt32                m_seqNum;
