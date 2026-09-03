@@ -39,6 +39,42 @@ audit_bundle() {
         --manifest "$B_MANIFEST"
 }
 
+# Qt built from source stamps framework runpaths with a trailing slash
+# (e.g. "@loader_path/../../../"), which the bundle audit rejects as
+# malformed.  Stripping the slash preserves the resolved location exactly.
+# Absolute runpaths (e.g. the dependency prefix lib dir leaked in by the
+# linker) reference the build machine and are unsafe; nothing in the bundle
+# needs them since every bundled library resolves through
+# @executable_path/../Frameworks.  Runs after macdeployqt owns the bundle.
+normalize_bundle_rpaths() {
+    tmp_list="$(mktemp "${TMPDIR:-/tmp}/barrier-rpaths.XXXXXX")" || exit 1
+    find Barrier.app/Contents -type f -print0 > "$tmp_list" || exit 1
+    while IFS= read -r -d '' binary; do
+        case "$(file -b "$binary")" in
+            *Mach-O*) ;;
+            *) continue ;;
+        esac
+        while IFS= read -r runpath; do
+            case "$runpath" in
+                /*)
+                    info "Deleting absolute runpath in ${binary}: ${runpath}"
+                    install_name_tool -delete_rpath "$runpath" "$binary" || return 1
+                    ;;
+                */)
+                    trimmed="${runpath%/}"
+                    case "$trimmed" in
+                        @loader_path|@executable_path|@loader_path/*|@executable_path/*)
+                            info "Normalizing runpath in ${binary}: ${runpath} -> ${trimmed}"
+                            install_name_tool -rpath "$runpath" "$trimmed" "$binary" || return 1
+                            ;;
+                    esac
+                    ;;
+            esac
+        done < <(otool -l "$binary" 2>/dev/null | sed -n 's/^ *path //;s/ (offset.*//p')
+    done < <(cat "$tmp_list")
+    rm -f "$tmp_list"
+}
+
 info "Checking for bundle contents"
 if [ ! -d "Barrier.app/Contents" ]; then
     error "Please make sure that the build completed successfully"
@@ -76,9 +112,8 @@ if [ "$B_BUILDTYPE" = "Release" ]; then
     -executable="$B_BARRIERC" \
     -executable="$B_BARRIERS" || exit 1
 
+    normalize_bundle_rpaths || exit 1
     audit_bundle || exit 1
-
-    info "Building Release disk image (dmg)"
     B_DMG_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/barrier-dmg.XXXXXX")" || exit 1
     if ! ditto Barrier.app "$B_DMG_STAGING/Barrier.app"; then
         rm -r "$B_DMG_STAGING"
