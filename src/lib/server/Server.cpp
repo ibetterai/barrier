@@ -698,13 +698,19 @@ Server::switchScreen(BaseClientProxy* dst,
 	// since that's a waste of time we skip that and just warp the
 	// mouse.
 	if (m_active != dst) {
+		BaseClientProxy* oldActive = m_active;
 		// leave active screen
 		if (!m_active->leave()) {
 			// cannot leave screen
 			LOG((CLOG_WARN "can't leave screen"));
 			return;
 		}
-
+		if (oldActive != m_primaryClient) {
+			// Balance any modifiers replayed to (or pressed on) the
+			// secondary being left.  Later physical releases land on
+			// the new screen as harmless extra key ups.
+			sendTrackedModifiers(oldActive, false);
+		}
 		// update the primary client's clipboards if we're leaving the
 		// primary screen.
 		if (m_active == m_primaryClient && m_enableClipboard) {
@@ -727,6 +733,12 @@ Server::switchScreen(BaseClientProxy* dst,
 		m_active->enter(x, y, m_seqNum,
 								m_primaryClient->getToggleMask(),
 								forScreensaver);
+		if (m_active != m_primaryClient && !forScreensaver) {
+			// Forward modifiers held across the switch so the new screen
+			// sees their key downs; their releases follow on whichever
+			// screen is active at release time.
+			sendTrackedModifiers(m_active, true);
+		}
 
 		if (m_enableClipboard) {
 			// send the clipboard data to new active screen
@@ -2201,6 +2213,7 @@ void
 Server::onKeyDown(KeyID id, KeyModifierMask mask, KeyButton button,
 				const char* screens)
 {
+	trackModifierDown(id, mask, button);
 	LOG((CLOG_DEBUG1 "onKeyDown id=%d mask=0x%04x button=0x%04x", id, mask, button));
 	assert(m_active != NULL);
 
@@ -2228,6 +2241,7 @@ void
 Server::onKeyUp(KeyID id, KeyModifierMask mask, KeyButton button,
 				const char* screens)
 {
+	trackModifierUp(button);
 	LOG((CLOG_DEBUG1 "onKeyUp id=%d mask=0x%04x button=0x%04x", id, mask, button));
 	assert(m_active != NULL);
 
@@ -2260,6 +2274,57 @@ Server::onKeyRepeat(KeyID id, KeyModifierMask mask,
 
 	// relay
 	m_active->keyRepeat(id, mask, count, button);
+}
+
+static bool
+isReplayableModifier(KeyID id)
+{
+    switch (id) {
+    case kKeyShift_L:
+    case kKeyShift_R:
+    case kKeyControl_L:
+    case kKeyControl_R:
+    case kKeyAlt_L:
+    case kKeyAlt_R:
+    case kKeySuper_L:
+    case kKeySuper_R:
+    case kKeyMeta_L:
+    case kKeyMeta_R:
+    case kKeyFunction:
+    case kKeyGlobe:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void
+Server::trackModifierDown(KeyID id, KeyModifierMask mask, KeyButton button)
+{
+    if (button == 0 || !isReplayableModifier(id)) {
+        return;
+    }
+    m_pressedModifiers[button] = std::make_pair(id, mask);
+}
+
+void
+Server::trackModifierUp(KeyButton button)
+{
+    m_pressedModifiers.erase(button);
+}
+
+void
+Server::sendTrackedModifiers(BaseClientProxy* client, bool down)
+{
+    for (PressedModifiers::const_iterator i = m_pressedModifiers.begin();
+         i != m_pressedModifiers.end(); ++i) {
+        if (down) {
+            client->keyDown(i->second.first, i->second.second, i->first);
+        }
+        else {
+            client->keyUp(i->second.first, i->second.second, i->first);
+        }
+    }
 }
 
 void

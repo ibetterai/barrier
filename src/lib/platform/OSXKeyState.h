@@ -50,6 +50,16 @@ public:
     */
     void                handleModifierKeys(void* target,
                             KeyModifierMask oldMask, KeyModifierMask newMask);
+    //! Handle modifier key change with physical key identity
+    /*!
+    Like handleModifierKeys but uses the FlagsChanged event's virtual
+    key code to distinguish left/right modifier keys and the Fn/Globe
+    key, which share no mask bit.  Falls back to mask-diff behavior
+    when the key code is unknown.
+    */
+    void                handleModifierKeysEx(void* target,
+                            KeyModifierMask oldMask, KeyModifierMask newMask,
+                            UInt32 virtualKey, CGEventFlags macFlags);
 
     //@}
     //! @name accessors
@@ -167,7 +177,10 @@ private:
 
     typedef std::map<CFDataRef, SInt32> GroupMap;
     typedef std::map<UInt32, KeyID> VirtualKeyMap;
-
+    // Physical modifier key codes (virtual key codes) currently held down.
+    // CGEvent flags cannot distinguish left from right modifiers and have
+    // no Fn bit, so FlagsChanged direction for those keys is tracked here.
+    std::set<UInt32>    m_physicalModifiersDown;
     VirtualKeyMap        m_virtualKeyMap;
     mutable UInt32        m_deadKeyState;
     GroupList            m_groups;
@@ -177,4 +190,5 @@ private:
     bool                m_altPressed;
     bool                m_superPressed;
     bool                m_capsPressed;
+    bool                m_fnPressed;
 };
