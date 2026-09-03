@@ -2,6 +2,16 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.3` ( `2026-09-03` )
+================================
+
+Bug fixes
+---------
+
+- Synthesized Fn/Globe and right-hand modifiers as FlagsChanged events on the macOS client.
+  Globe behavior is driven by SecondaryFn state rather than KeyDown events, so forwarded Fn
+  presses had no effect until now.
+
 Barrier `3.4.2` ( `2026-09-03` )
 ================================
 

@@ -36,6 +36,7 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-029 | 2026-08-31 | Fix | Reconciled saved topology profiles after configured screens change | Shipped | 3.4.1 |
 | H-030 | 2026-08-31 | Fix | Explicit Stop cancels queued restarts and configuration failures stop retrying | Shipped | 3.4.1 |
 | H-031 | 2026-09-03 | Fix | Forwarded Fn/Globe, left/right modifiers, and brightness keys to the client with held-modifier replay on screen switch | Shipped | 3.4.2 |
+| H-032 | 2026-09-03 | Fix | Synthesized Fn/Globe and right-hand modifiers as FlagsChanged events on the macOS client | Shipped | 3.4.3 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.

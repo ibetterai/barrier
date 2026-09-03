@@ -1,1 +1,1 @@
-Forwarded Fn/Globe, left/right Command/Option/Shift/Control, and brightness keys from the macOS server to the client, and replayed modifiers held across screen switches.
+Forwarded Fn/Globe, left/right Command/Option/Shift/Control, and brightness keys from the macOS server to the client, replayed modifiers held across screen switches, and synthesized Fn/Globe and right-hand modifiers as FlagsChanged events on the macOS client.
