@@ -297,6 +297,9 @@ static const KeyID		kKeyKbdBrightnessDown	= 0xE0BA;
 static const KeyID		kKeyKbdBrightnessUp	= 0xE0BB;
 static const KeyID		kKeyFunction		= 0xE0BC;	/* Fn/Globe modifier */
 static const KeyID		kKeyGlobe		= 0xE0BD;	/* Globe tap key */
+static const KeyID		kKeySpotlight		= 0xE0BE;	/* Spotlight key */
+static const KeyID		kKeyDictation		= 0xE0BF;	/* Dictation key */
+static const KeyID		kKeyDoNotDisturb	= 0xE0C2;	/* Do Not Disturb key */
 static const KeyID		kKeyMissionControl	= 0xE0C0;
 static const KeyID		kKeyLaunchpad		= 0xE0C1;
 

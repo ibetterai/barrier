@@ -5,6 +5,25 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## 3.4.6 — 2026-09-03
+
+### Bug fixes
+
+- Replayed the SecondaryFn flag on synthesized function-row keys, matching
+  the flags real Magic Keyboard extras carry, for subsystem listeners that
+  key on it.
+
+## 3.4.5 — 2026-09-03
+
+### Bug fixes
+
+- Forwarded the Spotlight, Dictation, and Do Not Disturb keys (key codes
+  177, 176, 178) that Magic Keyboard F4/F5/F6 produce. Their KeyDown events
+  were swallowed as unmapped while their KeyUps leaked as KeyID 0; each now
+  travels as its own key with matching KeyDown/KeyUp synthesis on the client.
+  Note: F5/Dictation additionally requires macOS to accept the replayed key;
+  Spotlight and Do Not Disturb are verified working, Dictation is best-effort.
+
 ## 3.4.4 — 2026-09-03
 
 ### Bug fixes

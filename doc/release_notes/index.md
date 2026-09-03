@@ -2,6 +2,27 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.6` ( `2026-09-03` )
+================================
+
+Bug fixes
+---------
+
+- Replayed the SecondaryFn flag on synthesized function-row keys, matching the flags real
+  Magic Keyboard extras carry, for subsystem listeners that key on it.
+
+Barrier `3.4.5` ( `2026-09-03` )
+================================
+
+Bug fixes
+---------
+
+- Forwarded the Spotlight, Dictation, and Do Not Disturb keys (key codes 177, 176, 178) that
+  Magic Keyboard F4/F5/F6 produce. Their KeyDown events were swallowed as unmapped while their
+  KeyUps leaked as KeyID 0; each now travels as its own key with matching synthesis.
+  Spotlight and Do Not Disturb are verified working; Dictation turnaround is best-effort and
+  depends on macOS accepting the replayed key.
+
 Barrier `3.4.4` ( `2026-09-03` )
 ================================
 

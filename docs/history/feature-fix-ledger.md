@@ -38,6 +38,8 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-031 | 2026-09-03 | Fix | Forwarded Fn/Globe, left/right modifiers, and brightness keys to the client with held-modifier replay on screen switch | Shipped | 3.4.2 |
 | H-032 | 2026-09-03 | Fix | Synthesized Fn/Globe and right-hand modifiers as FlagsChanged events on the macOS client | Shipped | 3.4.3 |
 | H-033 | 2026-09-03 | Fix | Forwarded the Globe-tap key (key code 179) as its own Globe key with matching client synthesis | Shipped | 3.4.4 |
+| H-034 | 2026-09-03 | Fix | Forwarded Spotlight, Dictation, and Do Not Disturb keys (codes 177, 176, 178) as their own keys | Shipped | 3.4.5 |
+| H-035 | 2026-09-03 | Fix | Replayed SecondaryFn flag on synthesized function-row keys | Shipped | 3.4.6 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.
