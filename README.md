@@ -215,6 +215,11 @@ Legacy Barrier (2.4.0 and before) compatibility.
 - If the target Mac's Mission Control keyboard shortcut for moving left/right a
   Space is disabled or remapped away from `Control` + left/right arrow, Spaces
   switching may not occur until that macOS setting is restored.
+- Mac Magic Keyboard extras (Fn/Globe, Spotlight, Dictation, Do Not Disturb)
+  forward to the client as of 3.4.2-3.4.6, with two platform caveats: the
+  client Mac needs the relevant input source or setting enabled (e.g. a
+  second input for Fn-tap switching), and F5/Dictation is best-effort because
+  macOS handles that key below the event-injection layer.
 
 ## Contact and support for this fork
 

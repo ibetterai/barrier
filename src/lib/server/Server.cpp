@@ -2292,6 +2292,9 @@ isReplayableModifier(KeyID id)
     case kKeyMeta_R:
     case kKeyFunction:
     case kKeyGlobe:
+    case kKeySpotlight:
+    case kKeyDictation:
+    case kKeyDoNotDisturb:
         return true;
     default:
         return false;

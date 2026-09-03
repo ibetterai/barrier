@@ -42,6 +42,11 @@ static const UInt32 s_fnVK       = kVK_Function; // Function/Globe (63)
 // FlagsChanged(63) down/up plus a KeyDown/KeyUp pair with key code 179;
 // the KeyDown was swallowed as unmapped while its KeyUp leaked as KeyID 0.
 static const UInt32 s_globeVK    = 179;
+// Apple function-row extras (undocumented pseudo-codes from packet captures
+// of Magic Keyboard taps: F4 -> 177, F5 -> 176, F6 -> 178).
+static const UInt32 s_dictationVK  = 176;
+static const UInt32 s_spotlightVK  = 177;
+static const UInt32 s_dndVK        = 178;
 static const UInt32 s_capsLockVK = kVK_CapsLock;
 static const UInt32 s_numLockVK  = kVK_ANSI_KeypadClear; // 71
 
@@ -140,6 +145,9 @@ static const KeyEntry    s_controlKeys[] = {
     { kKeyLaunchpad, s_launchpadVK },
     { kKeyBrightnessUp,  s_brightnessUp },
     { kKeyBrightnessDown, s_brightnessDown },
+    { kKeySpotlight,  s_spotlightVK },
+    { kKeyDictation,  s_dictationVK },
+    { kKeyDoNotDisturb, s_dndVK },
 
     // JIS keyboards only
     { kKeyEisuToggle, kVK_JIS_Eisu },
@@ -619,9 +627,19 @@ OSXKeyState::postHIDVirtualKey(const UInt8 virtualKeyCode,
         event.key.keyCode = virtualKeyCode;
         event.key.origCharSet = event.key.charSet = NX_ASCIISET;
         event.key.origCharCode = event.key.charCode = 0;
+        // Apple function-row extras (Spotlight, Dictation, Do Not Disturb,
+        // Globe tap) arrive with SecondaryFn set.  Subsystem listeners
+        // ignore the replay without it.
+        UInt32 eventFlags = 0;
+        if (virtualKeyCode == s_spotlightVK ||
+            virtualKeyCode == s_dictationVK ||
+            virtualKeyCode == s_dndVK ||
+            virtualKeyCode == s_globeVK) {
+            eventFlags = NX_SECONDARYFNMASK | NX_NONCOALSESCEDMASK;
+        }
         kr = IOHIDPostEvent(getEventDriver(),
                 postDown ? NX_KEYDOWN : NX_KEYUP,
-                loc, &event, kNXEventDataVersion, 0, false);
+                loc, &event, kNXEventDataVersion, eventFlags, false);
         assert(KERN_SUCCESS == kr);
         break;
     }

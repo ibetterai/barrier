@@ -226,3 +226,37 @@ TEST(OSXKeyStateTests, globeTapKeyDown_mapsToGlobe)
     ASSERT_EQ(1u, ids.size());
     EXPECT_EQ(kKeyGlobe, ids[0]);
 }
+
+TEST(OSXKeyStateTests, functionRowKeyDown_mapsToRowKeys)
+{
+    // Packet captures of Magic Keyboard taps (mouse on client) show each
+    // of F4/F5/F6 arriving as KeyDown/KeyUp with codes 177/176/178.  Each
+    // down must map to its own KeyID: KeyUp always produces a button, so
+    // an unmapped down leaks its release as KeyID 0.
+    struct Expectation { UInt32 m_vk; KeyID m_id; };
+    static const Expectation s_cases[] = {
+        { 177, kKeySpotlight },
+        { 176, kKeyDictation },
+        { 178, kKeyDoNotDisturb },
+    };
+
+    barrier::KeyMap keyMap;
+    RecordingEventQueue eventQueue;
+    TestableKeyState keyState(&eventQueue, keyMap);
+    keyState.updateKeyMap();
+
+    for (size_t i = 0; i < sizeof(s_cases) / sizeof(s_cases[0]); ++i) {
+        CGEventRef event =
+            CGEventCreateKeyboardEvent(NULL, s_cases[i].m_vk, true);
+        ASSERT_TRUE(event != NULL);
+        OSXKeyState::KeyIDs ids;
+        KeyModifierMask mask = 0;
+        KeyButton button = keyState.mapKeyFromEvent(ids, &mask, event);
+        CFRelease(event);
+
+        EXPECT_NE(0, button);
+        ASSERT_EQ(1u, ids.size());
+        EXPECT_EQ(s_cases[i].m_id, ids[0]);
+        EXPECT_NE(0, keyState.getButton(s_cases[i].m_id, 0));
+    }
+}
