@@ -86,6 +86,7 @@ const KeyNameMapEntry kKeyNameMap[] = {
     { "F35",            kKeyF35 },
     { "Find",            kKeyFind },
     { "Function",        kKeyFunction },
+    { "Globe",            kKeyGlobe },
     { "Help",            kKeyHelp },
     { "Henkan",            kKeyHenkan },
     { "Home",            kKeyHome },

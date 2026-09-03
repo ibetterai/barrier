@@ -41,6 +41,7 @@ body:
         - v3.4.1
         - v3.4.2
         - v3.4.3
+        - v3.4.4
         - From Git HEAD or commit (specify below)
     validations:
       required: true

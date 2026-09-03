@@ -2,6 +2,16 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.4` ( `2026-09-03` )
+================================
+
+Bug fixes
+---------
+
+- Forwarded the Globe-tap key (key code 179) that accompanies every Magic Keyboard Fn tap. Its
+  KeyDown was swallowed as unmapped while its KeyUp leaked as KeyID 0, so the tap arrived
+  incomplete; it now travels as its own Globe key with matching KeyDown/KeyUp synthesis.
+
 Barrier `3.4.3` ( `2026-09-03` )
 ================================
 

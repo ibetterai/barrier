@@ -38,6 +38,10 @@ static const UInt32 s_altVK_R    = 61; // right Option
 static const UInt32 s_superVK    = kVK_Command; // left Command (55)
 static const UInt32 s_superVK_R  = 54; // right Command
 static const UInt32 s_fnVK       = kVK_Function; // Function/Globe (63)
+// Globe-tap phantom key.  Packet captures of a Magic Keyboard Fn tap show
+// FlagsChanged(63) down/up plus a KeyDown/KeyUp pair with key code 179;
+// the KeyDown was swallowed as unmapped while its KeyUp leaked as KeyID 0.
+static const UInt32 s_globeVK    = 179;
 static const UInt32 s_capsLockVK = kVK_CapsLock;
 static const UInt32 s_numLockVK  = kVK_ANSI_KeypadClear; // 71
 
@@ -122,6 +126,11 @@ static const KeyEntry    s_controlKeys[] = {
     { kKeyMeta_L,        s_superVK },
     { kKeyMeta_R,        s_superVK_R },
     { kKeyFunction,        s_fnVK },
+    // The Globe-tap KeyDown/KeyUp pair arrives with this key code while the
+    // modifier edge uses s_fnVK.  It needs its own KeyID: KeyMap always
+    // resolves one entry per ID, and each shape needs its own synthesis
+    // path on the client (FlagsChanged for s_fnVK, KeyDown/Up for s_globeVK).
+    { kKeyGlobe,        s_globeVK },
 
     // toggle modifiers
     { kKeyNumLock,        s_numLockVK },

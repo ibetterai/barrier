@@ -2291,6 +2291,7 @@ isReplayableModifier(KeyID id)
     case kKeyMeta_L:
     case kKeyMeta_R:
     case kKeyFunction:
+    case kKeyGlobe:
         return true;
     default:
         return false;

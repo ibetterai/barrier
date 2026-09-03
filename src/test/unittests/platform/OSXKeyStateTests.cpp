@@ -202,4 +202,27 @@ TEST(OSXKeyStateTests, clientKeyMap_resolvesFunctionKey)
     keyState.updateKeyMap();
 
     EXPECT_NE(0, keyState.getButton(kKeyFunction, 0));
+    EXPECT_NE(0, keyState.getButton(kKeyGlobe, 0));
+}
+
+TEST(OSXKeyStateTests, globeTapKeyDown_mapsToGlobe)
+{
+    // A Magic Keyboard Fn tap carries a KeyDown/KeyUp pair with key code
+    // 179 alongside the FlagsChanged(63) edge.  The down must map instead
+    // of being swallowed: KeyUp events always produce a button, so an
+    // unmapped down leaks its release as KeyID 0.
+    barrier::KeyMap keyMap;
+    RecordingEventQueue eventQueue;
+    OSXKeyState keyState(&eventQueue, keyMap);
+
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, 179, true);
+    ASSERT_TRUE(event != NULL);
+    OSXKeyState::KeyIDs ids;
+    KeyModifierMask mask = 0;
+    KeyButton button = keyState.mapKeyFromEvent(ids, &mask, event);
+    CFRelease(event);
+
+    EXPECT_NE(0, button);
+    ASSERT_EQ(1u, ids.size());
+    EXPECT_EQ(kKeyGlobe, ids[0]);
 }
