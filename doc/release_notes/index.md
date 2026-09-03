@@ -2,6 +2,16 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.7` ( `2026-09-03` )
+================================
+
+Bug fixes
+---------
+
+- Normalized bundled runpaths before the release audit so the public disk image builds:
+  source-built Qt frameworks carry trailing-slash runpaths and the linker leaks the
+  absolute dependency-prefix lib dir. No product code changes.
+
 Barrier `3.4.6` ( `2026-09-03` )
 ================================
 

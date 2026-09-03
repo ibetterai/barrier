@@ -76,18 +76,48 @@ if ! git -C "$repo_root" show \
     exit 1
 fi
 
+# The v3.4.6 automation side is the file from its automation tag.  The
+# working tree file has moved on (it now carries the next release pins),
+# so it must not be used as this row's fixture.
+automation_workflow_346="$test_root/automation-346.yml"
+if ! git -C "$repo_root" show \
+    v3.4.6-automation.1:.github/workflows/release-macos-arm64.yml \
+    > "$automation_workflow_346"; then
+    echo 'unable to prepare v3.4.6 automation workflow fixture' >&2
+    exit 1
+fi
+
 /usr/bin/python3 "$verifier" \
     --release-tag v3.4.6 \
     --source-workflow "$source_workflow_346" \
-    --automation-workflow "$automation_workflow" >/dev/null
+    --automation-workflow "$automation_workflow_346" >/dev/null
 
 mutated_automation_346="$test_root/mutated-automation-346.yml"
-/bin/cp "$automation_workflow" "$mutated_automation_346"
+/bin/cp "$automation_workflow_346" "$mutated_automation_346"
 printf '\n# unknown automation field\n' >> "$mutated_automation_346"
 if /usr/bin/python3 "$verifier" \
     --release-tag v3.4.6 \
     --source-workflow "$source_workflow_346" \
     --automation-workflow "$mutated_automation_346" >/dev/null 2>&1; then
+    echo 'release-recipe verifier accepted automation workflow drift' >&2
+    exit 1
+fi
+
+# v3.4.7 has no tag yet (it lands after this change merges), so both
+# fixtures are the working tree file: the tag tree will carry byte-identical
+# content by construction, and resolve() enforces it at release time.
+/usr/bin/python3 "$verifier" \
+    --release-tag v3.4.7 \
+    --source-workflow "$automation_workflow" \
+    --automation-workflow "$automation_workflow" >/dev/null
+
+mutated_automation_347="$test_root/mutated-automation-347.yml"
+/bin/cp "$automation_workflow" "$mutated_automation_347"
+printf '\n# unknown automation field\n' >> "$mutated_automation_347"
+if /usr/bin/python3 "$verifier" \
+    --release-tag v3.4.7 \
+    --source-workflow "$automation_workflow" \
+    --automation-workflow "$mutated_automation_347" >/dev/null 2>&1; then
     echo 'release-recipe verifier accepted automation workflow drift' >&2
     exit 1
 fi
