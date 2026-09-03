@@ -170,6 +170,7 @@ OSXKeyState::init()
     m_altPressed = false;
     m_superPressed = false;
     m_capsPressed = false;
+    m_fnPressed = false;
 
     // build virtual key map
     for (size_t i = 0; i < sizeof(s_controlKeys) / sizeof(s_controlKeys[0]);
@@ -374,6 +375,10 @@ OSXKeyState::getModifierStateAsOSXFlags()
         modifiers |= CGEventFlags(kCGEventFlagMaskAlphaShift);
     }
 
+    if (m_fnPressed) {
+        modifiers |= CGEventFlags(kCGEventFlagMaskSecondaryFn);
+    }
+
     return modifiers;
 }
 
@@ -529,31 +534,59 @@ OSXKeyState::postHIDVirtualKey(const UInt8 virtualKeyCode,
     switch (virtualKeyCode)
     {
     case s_shiftVK:
+    case s_shiftVK_R:
     case s_superVK:
+    case s_superVK_R:
     case s_altVK:
+    case s_altVK_R:
     case s_controlVK:
+    case s_controlVK_R:
     case s_capsLockVK:
+    case s_fnVK:
         switch (virtualKeyCode)
         {
         case s_shiftVK:
                 modifiersDelta = NX_SHIFTMASK | NX_DEVICELSHIFTKEYMASK;
                 m_shiftPressed = postDown;
                 break;
+        case s_shiftVK_R:
+                modifiersDelta = NX_SHIFTMASK | NX_DEVICERSHIFTKEYMASK;
+                m_shiftPressed = postDown;
+                break;
         case s_superVK:
                 modifiersDelta = NX_COMMANDMASK | NX_DEVICELCMDKEYMASK;
+                m_superPressed = postDown;
+                break;
+        case s_superVK_R:
+                modifiersDelta = NX_COMMANDMASK | NX_DEVICERCMDKEYMASK;
                 m_superPressed = postDown;
                 break;
         case s_altVK:
                 modifiersDelta = NX_ALTERNATEMASK | NX_DEVICELALTKEYMASK;
                 m_altPressed = postDown;
                 break;
+        case s_altVK_R:
+                modifiersDelta = NX_ALTERNATEMASK | NX_DEVICERALTKEYMASK;
+                m_altPressed = postDown;
+                break;
         case s_controlVK:
                 modifiersDelta = NX_CONTROLMASK | NX_DEVICELCTLKEYMASK;
+                m_controlPressed = postDown;
+                break;
+        case s_controlVK_R:
+                modifiersDelta = NX_CONTROLMASK | NX_DEVICERCTLKEYMASK;
                 m_controlPressed = postDown;
                 break;
         case s_capsLockVK:
                 modifiersDelta = NX_ALPHASHIFTMASK;
                 m_capsPressed = postDown;
+                break;
+        case s_fnVK:
+                // The Fn/Globe key has no device mask.  Globe behavior
+                // (tap actions, hold-to-switch input source) is driven by
+                // the SecondaryFn FlagsChanged state, not KeyDown events.
+                modifiersDelta = NX_SECONDARYFNMASK;
+                m_fnPressed = postDown;
                 break;
         }
 
