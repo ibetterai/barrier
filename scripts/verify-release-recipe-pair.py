@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
-"""Verify the audited one-release workflow pair for immutable v3.4.0.
+"""Verify an audited release workflow pair for an immutable product tag.
 
-Version 3.4.0 predates a tag-owned product driver. Its protected product tag
-supplies the original recipe while a separate protected automation tag supplies
-the repaired orchestration. The complete workflow files were compared during
-review and are accepted only as this exact hash pair. Any unknown step, field,
-or command changes a full-file fingerprint and fails closed. Future release
-tags must use a tag-owned driver.
+Each supported product tag owns its driver: the exact (source, automation)
+workflow-file fingerprint pair that built it. v3.4.0 predates this table and
+keeps its original pair. Adding a release means adding one audited row; any
+unknown tag, unknown step, field, or command changes a fingerprint and fails
+closed.
 """
 
 import argparse
@@ -16,11 +15,26 @@ import re
 import sys
 from pathlib import Path
 
-
-SUPPORTED_TAG = "v3.4.0"
-SOURCE_WORKFLOW_SHA256 = "c0f707e5b4d51c4d1a36545c2f681a9a79cdb567dac1a97f4d8dad9dad639601"
-AUTOMATION_WORKFLOW_SHA256 = "4cbff406f667d099e3608c88c05262ae6b7dec144570f92a992630bafe36c74b"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Audited (source workflow, automation workflow) fingerprint pairs by product
+# tag. The source workflow is the file committed at the product tag; the
+# automation workflow is the file in the automation-tag tree that ran the
+# build. Both trees are immutable and reviewed before tagging.
+RECIPES = {
+    "v3.4.0": {
+        "source_workflow_sha256":
+            "c0f707e5b4d51c4d1a36545c2f681a9a79cdb567dac1a97f4d8dad9dad639601",
+        "automation_workflow_sha256":
+            "4cbff406f667d099e3608c88c05262ae6b7dec144570f92a992630bafe36c74b",
+    },
+    "v3.4.6": {
+        "source_workflow_sha256":
+            "4cbff406f667d099e3608c88c05262ae6b7dec144570f92a992630bafe36c74b",
+        "automation_workflow_sha256":
+            "1cac12cb71accb97018d896cf260d9df5df61cecc99f6b50c676b6c05541adc2",
+    },
+}
 MAX_WORKFLOW_BYTES = 128 * 1024
 
 
@@ -59,13 +73,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     try:
         args = parse_args()
-        if args.release_tag != SUPPORTED_TAG:
+        recipe = RECIPES.get(args.release_tag)
+        if recipe is None:
             raise VerificationError
-        if not SHA256_RE.fullmatch(AUTOMATION_WORKFLOW_SHA256):
+        for key in ("source_workflow_sha256",
+                    "automation_workflow_sha256"):
+            if not SHA256_RE.fullmatch(recipe[key]):
+                raise VerificationError
+        if fingerprint(args.source_workflow) != recipe["source_workflow_sha256"]:
             raise VerificationError
-        if fingerprint(args.source_workflow) != SOURCE_WORKFLOW_SHA256:
-            raise VerificationError
-        if fingerprint(args.automation_workflow) != AUTOMATION_WORKFLOW_SHA256:
+        if fingerprint(args.automation_workflow) != recipe["automation_workflow_sha256"]:
             raise VerificationError
     except VerificationError:
         print("release-recipe verification failed", file=sys.stderr)
