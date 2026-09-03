@@ -179,3 +179,27 @@ TEST(OSXKeyStateTests, unknownKeycodeMaskChange_keepsLegacyLeftMapping)
     EXPECT_TRUE(eventQueue.m_events[0].m_down);
     EXPECT_EQ(kKeySuper_L, eventQueue.m_events[0].m_key);
 }
+
+namespace {
+
+class TestableKeyState : public OSXKeyState {
+public:
+    TestableKeyState(IEventQueue* events, barrier::KeyMap& keyMap) :
+        OSXKeyState(events, keyMap) {}
+    using OSXKeyState::getButton;
+};
+
+} // namespace
+
+TEST(OSXKeyStateTests, clientKeyMap_resolvesFunctionKey)
+{
+    // The client synthesizes whatever its key map resolves.  If the map
+    // has no button for the key, KeyState::fakeKeyDown drops it before
+    // any HID event is posted.
+    barrier::KeyMap keyMap;
+    RecordingEventQueue eventQueue;
+    TestableKeyState keyState(&eventQueue, keyMap);
+    keyState.updateKeyMap();
+
+    EXPECT_NE(0, keyState.getButton(kKeyFunction, 0));
+}
