@@ -210,6 +210,45 @@ TEST(ServerConfigPersistenceTests,
 }
 
 TEST(ServerConfigPersistenceTests,
+     configuredOfflineClientReceivesGeometryWhenProfileIsSaved)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString settingsPath = directory.filePath("barrier.ini");
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    writeConfiguredScreens(settings, {"server", "offline-client"});
+    ServerConfig liveConfig(&settings, 5, 3, nullptr);
+    ServerConfig editedConfig(liveConfig);
+
+    barrier::DisplayTopology topology;
+    topology.displays = {
+        {"internal-display", {0, 0, 1920, 1080}, 0, true}
+    };
+    topology = topology.normalized();
+    editedConfig.setCurrentTopology(topology, "server");
+
+    QString error;
+    ASSERT_TRUE(editedConfig.saveCurrentTopologyProfile(&error))
+        << error.toStdString();
+    ASSERT_TRUE(liveConfig.commitAcceptedConfiguration(
+        editedConfig, &error)) << error.toStdString();
+
+    QSettings relaunchedSettings(settingsPath, QSettings::IniFormat);
+    ServerConfig relaunchedConfig(
+        &relaunchedSettings, 5, 3, nullptr);
+    relaunchedConfig.setCurrentTopology(topology, "server");
+    ASSERT_TRUE(relaunchedConfig.isCurrentTopologyKnown());
+
+    const barrier::TopologyProfile& saved =
+        relaunchedConfig.topologyProfiles().at(topology.profileKey());
+    EXPECT_EQ(1u, saved.positions.count("offline-client"));
+    ASSERT_EQ(1u, saved.displayRects.count("offline-client"));
+    EXPECT_EQ(QList<QRect>({QRect(0, 0, 1920, 1080)}),
+              saved.displayRects.at("offline-client"));
+}
+
+TEST(ServerConfigPersistenceTests,
      rejectedAcceptedConfigurationDoesNotMutateDurableSettings)
 {
     QTemporaryDir directory;

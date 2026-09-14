@@ -264,11 +264,64 @@ bool ServerConfig::saveCurrentTopologyProfile(QString* error)
             configuredScreens.append(screen.name());
         }
     }
+
+    QRect occupiedBounds;
+    auto includeGeometry = [&occupiedBounds](
+            const std::pair<int, int>& position,
+            const QList<QRect>& displayRects) {
+        for (const QRect& rect : displayRects) {
+            occupiedBounds = occupiedBounds.united(
+                rect.translated(position.first, position.second));
+        }
+    };
+    for (const QString& screenName : configuredScreens) {
+        barrier::FreeformPositions::const_iterator position =
+            profile.positions.find(screenName);
+        barrier::FreeformDisplayRects::const_iterator displayRects =
+            profile.displayRects.find(screenName);
+        if (position != profile.positions.end() &&
+            displayRects != profile.displayRects.end() &&
+            !displayRects->second.isEmpty()) {
+            includeGeometry(position->second, displayRects->second);
+        }
+    }
+
+    // A configured client can be added while it is offline, so no runtime
+    // display metadata exists for it yet. Give it the same placeholder used
+    // by the freeform editor and place it beside the known layout. This keeps
+    // the profile complete until the client connects and reports real bounds.
+    for (const QString& screenName : configuredScreens) {
+        barrier::FreeformDisplayRects::iterator displayRects =
+            profile.displayRects.find(screenName);
+        if (displayRects == profile.displayRects.end() ||
+            displayRects->second.isEmpty()) {
+            profile.displayRects[screenName] = {
+                QRect(0, 0, 1920, 1080)
+            };
+            displayRects = profile.displayRects.find(screenName);
+        }
+
+        barrier::FreeformPositions::iterator position =
+            profile.positions.find(screenName);
+        if (position == profile.positions.end()) {
+            const int x = occupiedBounds.isEmpty()
+                ? 0
+                : occupiedBounds.x() + occupiedBounds.width() + 20;
+            const int y = occupiedBounds.isEmpty() ? 0 : occupiedBounds.y();
+            profile.positions[screenName] = std::make_pair(x, y);
+            position = profile.positions.find(screenName);
+        }
+        includeGeometry(position->second, displayRects->second);
+    }
+
     if (!barrier::restrictTopologyProfileToScreens(
-            profile, configuredScreens, error)) {
+            profile, configuredScreens, error) ||
+        !barrier::putTopologyProfile(m_topologyProfiles, profile, error)) {
         return false;
     }
-    return barrier::putTopologyProfile(m_topologyProfiles, profile, error);
+    m_freeformPositions = profile.positions;
+    m_freeformDisplayRects = profile.displayRects;
+    return true;
 }
 
 bool ServerConfig::commitAcceptedConfiguration(
