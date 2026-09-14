@@ -106,13 +106,12 @@ QStringList configuredScreenNames(const std::vector<Screen>& screens)
 
 } // namespace
 
-ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
-                QString serverName, QWidget* mainWindow) :
+ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows,
+                QWidget* mainWindow) :
     m_pSettings(settings),
     m_Screens(),
     m_NumColumns(numColumns),
     m_NumRows(numRows),
-    m_ServerName(serverName),
     m_IgnoreAutoConfigClient(false),
     m_EnableDragAndDrop(false),
     m_ClipboardSharing(true),
@@ -183,7 +182,8 @@ void ServerConfig::clearFreeformPositions()
     m_freeformPositions.clear();
 }
 
-void ServerConfig::setCurrentTopology(const barrier::DisplayTopology& topology)
+void ServerConfig::setCurrentTopology(
+    const barrier::DisplayTopology& topology, const QString& serverName)
 {
     barrier::DisplayTopology normalized;
     try {
@@ -200,7 +200,7 @@ void ServerConfig::setCurrentTopology(const barrier::DisplayTopology& topology)
 
     const barrier::TopologyProfileSelection selection =
         barrier::selectTopologyProfile(
-            m_topologyProfiles, normalized, m_ServerName,
+            m_topologyProfiles, normalized, serverName,
             m_legacyFreeformPositions, m_legacyFreeformDisplayRects);
     m_currentTopology = normalized;
     m_hasCurrentTopology = true;
@@ -222,17 +222,18 @@ bool ServerConfig::isCurrentTopologyKnown() const
            m_topologyProfiles.count(m_currentTopology.profileKey()) != 0;
 }
 
-QList<QRect> ServerConfig::currentServerDisplayRects() const
+QList<QRect> ServerConfig::currentServerDisplayRects(
+    const QString& serverName) const
 {
     if (!m_hasCurrentTopology) {
         return QList<QRect>();
     }
     const barrier::TopologyProfileSelection selection =
         barrier::selectTopologyProfile(
-            barrier::TopologyProfiles(), m_currentTopology, m_ServerName,
+            barrier::TopologyProfiles(), m_currentTopology, serverName,
             barrier::FreeformPositions(), barrier::FreeformDisplayRects());
     barrier::FreeformDisplayRects::const_iterator server =
-        selection.displayRects.find(m_ServerName);
+        selection.displayRects.find(serverName);
     return server == selection.displayRects.end()
         ? QList<QRect>() : server->second;
 }
@@ -748,12 +749,13 @@ int ServerConfig::numScreens() const
     return rval;
 }
 
-int ServerConfig::autoAddScreen(const QString name)
+int ServerConfig::autoAddScreen(
+    const QString& name, const QString& serverName)
 {
     int serverIndex = -1;
     int targetIndex = -1;
-    if (!findScreenName(m_ServerName, serverIndex)) {
-        if (!fixNoServer(m_ServerName, serverIndex)) {
+    if (!findScreenName(serverName, serverIndex)) {
+        if (!fixNoServer(serverName, serverIndex)) {
             return kAutoAddScreenManualServer;
         }
     }

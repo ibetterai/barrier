@@ -172,11 +172,15 @@ void ZeroconfService::clientDetected(const QList<ZeroconfRecord>& list)
         }
     }
 
+    for (const ZeroconfRecord& record :
+         m_ClientEndpointLogPolicy.newOrChangedEndpoints(list)) {
+        m_pMainWindow->appendLogInfo(
+            tr("zeroconf client detected: %1").arg(record.serviceName));
+        m_pMainWindow->autoAddScreen(record.serviceName);
+    }
+
     QMap<QString, QList<ZeroconfRecord>> wakeCandidates;
     for (const ZeroconfRecord& record : list) {
-        m_pMainWindow->appendLogInfo(tr("zeroconf client detected: %1").arg(
-            record.serviceName));
-        m_pMainWindow->autoAddScreen(record.serviceName);
         if (!serverProximityId.isEmpty() &&
             record.isCurrentLocalWakeRoute(serverProximityId)) {
             wakeCandidates[record.serviceName].append(record);

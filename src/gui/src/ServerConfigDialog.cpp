@@ -92,7 +92,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     m_pFreeformWidget->setServerScreenName(m_LocalScreenName);
     if (serverConfig().hasCurrentTopology()) {
         m_pFreeformWidget->setServerDisplays(
-            serverConfig().currentServerDisplayRects());
+            serverConfig().currentServerDisplayRects(m_LocalScreenName));
     }
     else {
         m_pFreeformWidget->syncFromSystemDisplays();

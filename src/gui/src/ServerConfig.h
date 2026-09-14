@@ -42,7 +42,7 @@ class ServerConfig : public BaseConfig
 
     public:
         ServerConfig(QSettings* settings, int numColumns, int numRows,
-            QString serverName, QWidget* mainWindow);
+            QWidget* mainWindow);
         ~ServerConfig();
 
     public:
@@ -65,11 +65,13 @@ class ServerConfig : public BaseConfig
         bool getFreeformDisplayNames(const QString& name, QStringList& names) const;
         bool hasFreeformPositions() const;
         void clearFreeformPositions();
-        void setCurrentTopology(const barrier::DisplayTopology& topology);
+        void setCurrentTopology(const barrier::DisplayTopology& topology,
+                                const QString& serverName);
         void clearCurrentTopology();
         bool hasCurrentTopology() const { return m_hasCurrentTopology; }
         bool isCurrentTopologyKnown() const;
-        QList<QRect> currentServerDisplayRects() const;
+        QList<QRect> currentServerDisplayRects(
+            const QString& serverName) const;
         bool saveCurrentTopologyProfile(QString* error = nullptr);
         bool commitAcceptedConfiguration(
             ServerConfig& edited, QString* error = nullptr);
@@ -107,7 +109,8 @@ class ServerConfig : public BaseConfig
         bool save(const QString& fileName) const;
         void save(QFile& file) const;
         int numScreens() const;
-        int autoAddScreen(const QString name);
+        int autoAddScreen(const QString& name,
+                          const QString& serverName);
 
     protected:
         QSettings& settings() { return *m_pSettings; }
@@ -176,7 +179,6 @@ class ServerConfig : public BaseConfig
         int m_SwitchCornerSize;
         QList<bool> m_SwitchCorners;
         std::vector<Hotkey> m_Hotkeys;
-        QString m_ServerName;
         bool m_IgnoreAutoConfigClient;
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;

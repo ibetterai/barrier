@@ -91,6 +91,7 @@ private:
     QTimer m_ClientRegistrationRetryTimer;
     QMap<QString, QByteArray> m_ServerTxt;
     barrier::ZeroconfEndpointLogPolicy m_ServerEndpointLogPolicy;
+    barrier::ZeroconfEndpointLogPolicy m_ClientEndpointLogPolicy;
     QMap<QString, ZeroconfRecord> m_PairedClientRecords;
     QList<ZeroconfRecord> m_ClientRecords;
     barrier::ClientPresenceConnectionEvidence

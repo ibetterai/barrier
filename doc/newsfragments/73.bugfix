@@ -1,0 +1,1 @@
+Hardened event-queue startup readiness checks against missed condition notifications on newer macOS versions.
