@@ -585,16 +585,18 @@ EventQueue::getSystemTarget()
 void
 EventQueue::waitForReady() const
 {
+    static const double kReadyTimeoutSeconds = 10.0;
+    static const double kReadyPredicatePollSeconds = 0.1;
     Stopwatch timer(true);
     Lock lock(m_readyMutex);
 
-    // Test the stored predicate before waiting so callers arriving after the
-    // startup transition return immediately instead of blocking forever.
+    // Readiness is sticky. Recheck the predicate at the platform's normal
+    // cancellation-poll cadence so a missed notification cannot hide a
+    // completed startup transition until the full timeout expires.
     while (!(*m_readyCondVar)) {
         ++m_readyWaiterCount;
-        bool signaled = false;
         try {
-            signaled = m_readyCondVar->wait(timer, 10.0);
+            m_readyCondVar->wait(kReadyPredicatePollSeconds);
         }
         catch (...) {
             --m_readyWaiterCount;
@@ -602,8 +604,10 @@ EventQueue::waitForReady() const
         }
         --m_readyWaiterCount;
 
-        if (!signaled) {
-            throw std::runtime_error("event queue is not ready within 10 sec");
+        if (!(*m_readyCondVar) &&
+            timer.getTime() >= kReadyTimeoutSeconds) {
+            throw std::runtime_error(
+                "event queue is not ready within 10 sec");
         }
     }
 }
