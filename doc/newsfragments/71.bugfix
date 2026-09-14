@@ -1,0 +1,1 @@
+Fixed macOS server configuration repeatedly requesting a stale local screen name after it was changed, and stopped identical Bonjour client snapshots from reopening the same configuration prompt.

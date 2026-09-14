@@ -175,7 +175,7 @@ TEST(ServerConfigPersistenceTests,
     settings.sync();
     ASSERT_EQ(QSettings::NoError, settings.status());
 
-    ServerConfig liveConfig(&settings, 5, 3, "server", nullptr);
+    ServerConfig liveConfig(&settings, 5, 3, nullptr);
     ServerConfig editedConfig(liveConfig);
 
     barrier::DisplayTopology topology;
@@ -183,7 +183,7 @@ TEST(ServerConfigPersistenceTests,
         {"internal-display", {0, 0, 1920, 1080}, 0, true}
     };
     topology = topology.normalized();
-    editedConfig.setCurrentTopology(topology);
+    editedConfig.setCurrentTopology(topology, "server");
     editedConfig.setFreeformPosition("server", 0, 0);
     editedConfig.setFreeformPosition("client", 1920, -878);
     editedConfig.setFreeformDisplayRects(
@@ -202,8 +202,8 @@ TEST(ServerConfigPersistenceTests,
     // made the profile durable.
     QSettings relaunchedSettings(settingsPath, QSettings::IniFormat);
     ServerConfig relaunchedConfig(
-        &relaunchedSettings, 5, 3, "server", nullptr);
-    relaunchedConfig.setCurrentTopology(topology);
+        &relaunchedSettings, 5, 3, nullptr);
+    relaunchedConfig.setCurrentTopology(topology, "server");
     EXPECT_TRUE(relaunchedConfig.isCurrentTopologyKnown());
     EXPECT_NE(relaunchedConfig.topologyProfiles().end(),
               relaunchedConfig.topologyProfiles().find(topology.profileKey()));
@@ -232,8 +232,8 @@ TEST(ServerConfigPersistenceTests,
     settings.sync();
     ASSERT_EQ(QSettings::NoError, settings.status());
 
-    ServerConfig liveConfig(&settings, 5, 3, "server", nullptr);
-    TestServerConfig editedConfig(&settings, 5, 3, "server", nullptr);
+    ServerConfig liveConfig(&settings, 5, 3, nullptr);
+    TestServerConfig editedConfig(&settings, 5, 3, nullptr);
     editedConfig.setClipboardSharingForTest(false);
 
     barrier::DisplayTopology topology;
@@ -241,7 +241,7 @@ TEST(ServerConfigPersistenceTests,
         {"internal-display", {0, 0, 1920, 1080}, 0, true}
     };
     topology = topology.normalized();
-    editedConfig.setCurrentTopology(topology);
+    editedConfig.setCurrentTopology(topology, "server");
     editedConfig.setFreeformPosition("server", 0, 0);
     editedConfig.setFreeformPosition("client", 1920, 0);
     editedConfig.setFreeformDisplayRects(
@@ -297,7 +297,7 @@ TEST(ServerConfigPersistenceTests,
     ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
               barrier::TopologyProfileStore::save(settings, profiles));
 
-    ServerConfig config(&settings, 5, 3, "server", nullptr);
+    ServerConfig config(&settings, 5, 3, nullptr);
 
     ASSERT_EQ(2u, config.topologyProfiles().size());
     for (const auto& stored : config.topologyProfiles()) {
@@ -332,8 +332,8 @@ TEST(ServerConfigPersistenceTests,
     ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
               barrier::TopologyProfileStore::save(settings, profiles));
 
-    ServerConfig config(&settings, 5, 3, "server", nullptr);
-    config.setCurrentTopology(horizontal);
+    ServerConfig config(&settings, 5, 3, nullptr);
+    config.setCurrentTopology(horizontal, "server");
 
     EXPECT_TRUE(config.topologyProfiles().empty());
     EXPECT_FALSE(config.isCurrentTopologyKnown());
@@ -365,7 +365,7 @@ TEST(ServerConfigPersistenceTests,
     ASSERT_EQ(barrier::TopologyProfileStoreResult::Ok,
               barrier::TopologyProfileStore::save(settings, profiles));
 
-    ServerConfig liveConfig(&settings, 5, 3, "server", nullptr);
+    ServerConfig liveConfig(&settings, 5, 3, nullptr);
     TestServerConfig editedConfig(liveConfig);
     editedConfig.setConfiguredScreensForTest({"server", "client"});
     QString error;
@@ -380,12 +380,29 @@ TEST(ServerConfigPersistenceTests,
 
     QSettings relaunchedSettings(settingsPath, QSettings::IniFormat);
     ServerConfig relaunchedConfig(
-        &relaunchedSettings, 5, 3, "server", nullptr);
+        &relaunchedSettings, 5, 3, nullptr);
     ASSERT_EQ(2u, relaunchedConfig.topologyProfiles().size());
     for (const auto& stored : relaunchedConfig.topologyProfiles()) {
         EXPECT_EQ(0u, stored.second.positions.count("removed-client"));
         EXPECT_EQ(0u, stored.second.displayRects.count("removed-client"));
     }
+}
+
+TEST(ServerConfigPersistenceTests,
+     savedCurrentServerNameStopsManualPromptAfterStartupNameChanged)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    QSettings settings(
+        directory.filePath("barrier.ini"), QSettings::IniFormat);
+
+    TestServerConfig config(&settings, 5, 3, nullptr);
+    config.setConfiguredScreensForTest(
+        {"DT-MacStudio.local", "DT-M1Max", "client"});
+
+    EXPECT_EQ(
+        kAutoAddScreenIgnore,
+        config.autoAddScreen("client", "DT-M1Max"));
 }
 
 TEST(ServerConfigPersistenceTests, parsesClientDisplayRectsLogLine)

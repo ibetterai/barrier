@@ -154,7 +154,7 @@ MainWindow::MainWindow(QSettings& settings, AppConfig& appConfig) :
     m_AppConfig(&appConfig),
     m_pBarrier(NULL),
     m_BarrierState(barrierDisconnected),
-    m_ServerConfig(&m_Settings, 5, 3, m_AppConfig->screenName(), this),
+    m_ServerConfig(&m_Settings, 5, 3, this),
     m_pTempConfigFile(NULL),
     m_pTrayIcon(NULL),
     m_pTrayIconMenu(NULL),
@@ -1083,7 +1083,8 @@ void MainWindow::updateFromLogLine(const QString &line)
             m_ServerConfig.clearCurrentTopology();
         }
         else {
-            m_ServerConfig.setCurrentTopology(parsed.topology);
+            m_ServerConfig.setCurrentTopology(
+                parsed.topology, getScreenName());
         }
 
         QString statusText;
@@ -2217,13 +2218,13 @@ void MainWindow::on_m_pActionSettings_triggered()
 void MainWindow::autoAddScreen(const QString name)
 {
     if (!m_ServerConfig.ignoreAutoConfigClient()) {
-        int r = m_ServerConfig.autoAddScreen(name);
+        int r = m_ServerConfig.autoAddScreen(name, getScreenName());
         if (r != kAutoAddScreenOk) {
             switch (r) {
             case kAutoAddScreenManualServer:
                 showConfigureServer(
                     tr("Please add the server (%1) to the grid.")
-                        .arg(appConfig().screenName()));
+                        .arg(getScreenName()));
                 break;
 
             case kAutoAddScreenManualClient:
@@ -2299,7 +2300,7 @@ bool MainWindow::reloadRunningServerConfig(QString& error)
 
 void MainWindow::showConfigureServer(const QString& message)
 {
-    ServerConfigDialog dlg(this, serverConfig(), appConfig().screenName());
+    ServerConfigDialog dlg(this, serverConfig(), getScreenName());
     dlg.message(message);
     if (dlg.exec() == QDialog::Accepted &&
         serverConfig().hasCurrentTopology()) {
