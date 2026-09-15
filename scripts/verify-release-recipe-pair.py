@@ -42,6 +42,14 @@ RECIPES = {
         "automation_workflow_sha256":
             "4ca8a435bd7f12834224a0ab8c2dda27d570efa249f40c7c27ca8e4a4bf184e0",
     },
+    # v3.4.8 carries the offline-display profile completion fix, and its tag
+    # tree and automation tree share one reviewed workflow file.
+    "v3.4.8": {
+        "source_workflow_sha256":
+            "40cc4b5cda3542d9d7965853690f6eebf6ba6e0182f62590e7172450d60468dd",
+        "automation_workflow_sha256":
+            "40cc4b5cda3542d9d7965853690f6eebf6ba6e0182f62590e7172450d60468dd",
+    },
 }
 MAX_WORKFLOW_BYTES = 128 * 1024
 
