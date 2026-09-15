@@ -103,21 +103,41 @@ if /usr/bin/python3 "$verifier" \
     exit 1
 fi
 
-# v3.4.7 has no tag yet (it lands after this change merges), so both
-# fixtures are the working tree file: the tag tree will carry byte-identical
-# content by construction, and resolve() enforces it at release time.
+source_workflow_347="$test_root/source-347.yml"
+if ! git -C "$repo_root" show \
+    v3.4.7:.github/workflows/release-macos-arm64.yml \
+    > "$source_workflow_347"; then
+    echo 'unable to prepare v3.4.7 tagged release workflow fixture' >&2
+    exit 1
+fi
+
+automation_workflow_347="$test_root/automation-347.yml"
+if ! git -C "$repo_root" show \
+    v3.4.7-automation.1:.github/workflows/release-macos-arm64.yml \
+    > "$automation_workflow_347"; then
+    echo 'unable to prepare v3.4.7 automation workflow fixture' >&2
+    exit 1
+fi
+
 /usr/bin/python3 "$verifier" \
     --release-tag v3.4.7 \
+    --source-workflow "$source_workflow_347" \
+    --automation-workflow "$automation_workflow_347" >/dev/null
+
+# v3.4.8 has no tag yet, so both fixtures are the working tree file. The
+# product and automation tags will carry byte-identical content.
+/usr/bin/python3 "$verifier" \
+    --release-tag v3.4.8 \
     --source-workflow "$automation_workflow" \
     --automation-workflow "$automation_workflow" >/dev/null
 
-mutated_automation_347="$test_root/mutated-automation-347.yml"
-/bin/cp "$automation_workflow" "$mutated_automation_347"
-printf '\n# unknown automation field\n' >> "$mutated_automation_347"
+mutated_automation_348="$test_root/mutated-automation-348.yml"
+/bin/cp "$automation_workflow" "$mutated_automation_348"
+printf '\n# unknown automation field\n' >> "$mutated_automation_348"
 if /usr/bin/python3 "$verifier" \
-    --release-tag v3.4.7 \
+    --release-tag v3.4.8 \
     --source-workflow "$automation_workflow" \
-    --automation-workflow "$mutated_automation_347" >/dev/null 2>&1; then
+    --automation-workflow "$mutated_automation_348" >/dev/null 2>&1; then
     echo 'release-recipe verifier accepted automation workflow drift' >&2
     exit 1
 fi

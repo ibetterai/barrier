@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 180
     env:
-      AUTOMATION_TAG: v3.4.7-automation.1
+      AUTOMATION_TAG: v3.4.8-automation.1
       RELEASE_PREFIX: /tmp/barrier-release-prefix
       RELEASE_WORK_DIR: /tmp/barrier-release-work
       RELEASE_BUILD_DIR: /tmp/barrier-release-build
@@ -66,7 +66,7 @@ jobs:
             --automation-tag "$AUTOMATION_TAG" \
             --automation-sha "$GITHUB_SHA" \
             --version-file-sha256 \
-              5a0c2a58364adc54c8bc3f5cd8115ef618334f58251cde1d32f27cba64ac0c65 \
+              879f7a0f7be2f655f3de78f67f9379d99f0ab86f2551f5581e7573ed4bf4304e \
             >"$provenance_file"
           canonical_env="$RUNNER_TEMP/release-source.github-env"
           canonical_output="$RUNNER_TEMP/release-source.github-output"

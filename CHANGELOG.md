@@ -5,7 +5,6 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
-## [Unreleased]
 
 ### Bug fixes
 
@@ -15,6 +14,18 @@ snapshots and release documentation; see
 - Rechecked sticky event-queue readiness while waiting, preventing a missed
   condition notification from causing a false startup timeout on newer macOS
   versions.
+## 3.4.8 — 2026-09-14
+
+### Bug fixes
+
+- Fixed macOS server configuration repeatedly requesting a stale local screen
+  name after it was changed, and stopped identical Bonjour client snapshots
+  from reopening the same configuration prompt.
+- Hardened event-queue startup readiness checks against missed condition
+  notifications on newer macOS versions.
+- Allowed display profiles to be saved when newly configured clients are
+  offline by assigning temporary non-overlapping geometry until they report
+  their actual displays.
 
 ## 3.4.7 — 2026-09-03
 
@@ -24,6 +35,9 @@ snapshots and release documentation; see
   frameworks carry trailing-slash runpaths the audit rejects, and the linker
   leaks the absolute dependency-prefix lib dir into the GUI binary. No
   product code changes.
+- Added table-driven release-recipe verification that binds each product tag
+  to exact source and automation workflow fingerprints, rechecking protected
+  `main` CI before any release artifact is uploaded.
 
 ## 3.4.6 — 2026-09-03
 

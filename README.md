@@ -34,18 +34,16 @@ control over when and where machines connect.
 
 ## Download
 
-- Use [GitHub Releases](https://github.com/ibetterai/barrier/releases) to view
-  reconstructed notes. Apple Silicon DMGs appear there when a release includes
-  a verified binary asset.
+- Download the current Developer ID-signed, Apple-notarized Apple Silicon DMG
+  from [GitHub Releases](https://github.com/ibetterai/barrier/releases).
 - See the [changelog](CHANGELOG.md) and
-  [feature and fix ledger](docs/history/feature-fix-ledger.md) for the
-  reconstructed public product history.
+  [feature and fix ledger](docs/history/feature-fix-ledger.md) for the public
+  product history.
 
-The published Barrier binary targets Apple Silicon and has an effective
-macOS 26.0 minimum because of its bundled dependencies. Before attaching a
-future DMG, verify every bundled Mach-O deployment target together with its
-Developer ID signature, Apple notarization ticket, stapling, and offline
-Gatekeeper acceptance.
+Published binaries target Apple Silicon (`arm64`) and macOS 12.0 or later.
+Every attached DMG is built from an immutable release tag by the audited
+release workflow, then signed, notarized, stapled, downloaded fresh, and
+verified with Gatekeeper before publication.
 
 ## What this fork adds
 
@@ -55,8 +53,9 @@ Gatekeeper acceptance.
 - Freeform server configuration that follows the live macOS Displays layout
   when displays move and the configuration is re-saved.
 - Exact display-topology profiles that restore the saved freeform layout for
-  each physical macOS display arrangement and pause cross-machine switching
-  when the current arrangement is unknown.
+  each physical macOS display arrangement, remain saveable when a configured
+  client is offline, and pause cross-machine switching when the current
+  arrangement is unknown.
 - Optional macOS Bluetooth proximity gating, so a client starts only while its
   explicitly paired server is nearby, discoverable, and topology-ready, with
   pairing-scoped Connect and Departure signal thresholds.
@@ -94,6 +93,11 @@ cross-machine switching when no saved profile matches.
 A brief zero-display interval, such as a monitor reconnecting, uses a grace
 period instead of immediately disconnecting clients. Save a new profile after
 intentionally changing the physical display arrangement.
+
+Configured clients do not need to be online while a profile is saved. If a
+new offline client has not reported its display rectangles yet, Barrier assigns
+temporary non-overlapping geometry so the profile remains valid and the client
+can connect later.
 
 ## macOS proximity-gated connections
 

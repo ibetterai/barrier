@@ -264,11 +264,64 @@ bool ServerConfig::saveCurrentTopologyProfile(QString* error)
             configuredScreens.append(screen.name());
         }
     }
+
+    QRect occupiedBounds;
+    auto includeGeometry = [&occupiedBounds](
+            const std::pair<int, int>& position,
+            const QList<QRect>& displayRects) {
+        for (const QRect& rect : displayRects) {
+            occupiedBounds = occupiedBounds.united(
+                rect.translated(position.first, position.second));
+        }
+    };
+
+    // A configured client can be added while it is offline, so no runtime
+    // display metadata exists for it yet. Give it the same placeholder used
+    // by the freeform editor until the client reports real bounds.
+    for (const QString& screenName : configuredScreens) {
+        barrier::FreeformDisplayRects::iterator displayRects =
+            profile.displayRects.find(screenName);
+        if (displayRects == profile.displayRects.end() ||
+            displayRects->second.isEmpty()) {
+            profile.displayRects[screenName] = {
+                QRect(0, 0, 1920, 1080)
+            };
+        }
+    }
+
+    // Reserve every saved position before placing screens without one. This
+    // prevents a new fallback from overlapping placeholder geometry at a
+    // position retained from legacy settings.
+    for (const QString& screenName : configuredScreens) {
+        barrier::FreeformPositions::const_iterator position =
+            profile.positions.find(screenName);
+        if (position != profile.positions.end()) {
+            includeGeometry(
+                position->second, profile.displayRects.at(screenName));
+        }
+    }
+
+    for (const QString& screenName : configuredScreens) {
+        if (profile.positions.count(screenName) != 0) {
+            continue;
+        }
+        const int x = occupiedBounds.isEmpty()
+            ? 0
+            : occupiedBounds.x() + occupiedBounds.width() + 20;
+        const int y = occupiedBounds.isEmpty() ? 0 : occupiedBounds.y();
+        const std::pair<int, int> position = std::make_pair(x, y);
+        profile.positions[screenName] = position;
+        includeGeometry(position, profile.displayRects.at(screenName));
+    }
+
     if (!barrier::restrictTopologyProfileToScreens(
-            profile, configuredScreens, error)) {
+            profile, configuredScreens, error) ||
+        !barrier::putTopologyProfile(m_topologyProfiles, profile, error)) {
         return false;
     }
-    return barrier::putTopologyProfile(m_topologyProfiles, profile, error);
+    m_freeformPositions = profile.positions;
+    m_freeformDisplayRects = profile.displayRects;
+    return true;
 }
 
 bool ServerConfig::commitAcceptedConfiguration(

@@ -2,6 +2,16 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.8` ( `2026-09-14` )
+================================
+
+Bug fixes
+---------
+
+- Fixed macOS server configuration repeatedly requesting a stale local screen name after it was changed, and stopped identical Bonjour client snapshots from reopening the same configuration prompt.
+- Hardened event-queue startup readiness checks against missed condition notifications on newer macOS versions.
+- Allowed display profiles to be saved when newly configured clients are offline by assigning placeholder geometry until they report their actual displays.
+
 Barrier `3.4.7` ( `2026-09-03` )
 ================================
 
@@ -11,6 +21,9 @@ Bug fixes
 - Normalized bundled runpaths before the release audit so the public disk image builds:
   source-built Qt frameworks carry trailing-slash runpaths and the linker leaks the
   absolute dependency-prefix lib dir. No product code changes.
+- Added table-driven release-recipe verification that binds each product tag
+  to exact source and automation workflow fingerprints, rechecking protected
+  `main` CI before any release artifact is uploaded.
 
 Barrier `3.4.6` ( `2026-09-03` )
 ================================

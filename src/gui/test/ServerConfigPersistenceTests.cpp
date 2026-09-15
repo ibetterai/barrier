@@ -210,6 +210,57 @@ TEST(ServerConfigPersistenceTests,
 }
 
 TEST(ServerConfigPersistenceTests,
+     configuredOfflineClientsReceiveNonoverlappingGeometryWhenProfileIsSaved)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString settingsPath = directory.filePath("barrier.ini");
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    writeConfiguredScreens(
+        settings, {"server", "offline-client", "positioned-offline-client"});
+    ServerConfig liveConfig(&settings, 5, 3, nullptr);
+    ServerConfig editedConfig(liveConfig);
+
+    barrier::DisplayTopology topology;
+    topology.displays = {
+        {"internal-display", {0, 0, 1920, 1080}, 0, true}
+    };
+    topology = topology.normalized();
+    editedConfig.setCurrentTopology(topology, "server");
+    editedConfig.setFreeformPosition(
+        "positioned-offline-client", 1940, 0);
+
+    QString error;
+    ASSERT_TRUE(editedConfig.saveCurrentTopologyProfile(&error))
+        << error.toStdString();
+    ASSERT_TRUE(liveConfig.commitAcceptedConfiguration(
+        editedConfig, &error)) << error.toStdString();
+
+    QSettings relaunchedSettings(settingsPath, QSettings::IniFormat);
+    ServerConfig relaunchedConfig(
+        &relaunchedSettings, 5, 3, nullptr);
+    relaunchedConfig.setCurrentTopology(topology, "server");
+    ASSERT_TRUE(relaunchedConfig.isCurrentTopologyKnown());
+
+    const barrier::TopologyProfile& saved =
+        relaunchedConfig.topologyProfiles().at(topology.profileKey());
+    ASSERT_EQ(3u, saved.positions.size());
+    ASSERT_EQ(3u, saved.displayRects.size());
+    const std::pair<int, int>& offlinePosition =
+        saved.positions.at("offline-client");
+    const std::pair<int, int>& positionedOfflinePosition =
+        saved.positions.at("positioned-offline-client");
+    const QRect offlineBounds =
+        saved.displayRects.at("offline-client").first().translated(
+            offlinePosition.first, offlinePosition.second);
+    const QRect positionedOfflineBounds =
+        saved.displayRects.at("positioned-offline-client").first().translated(
+            positionedOfflinePosition.first, positionedOfflinePosition.second);
+    EXPECT_FALSE(offlineBounds.intersects(positionedOfflineBounds));
+}
+
+TEST(ServerConfigPersistenceTests,
      rejectedAcceptedConfigurationDoesNotMutateDurableSettings)
 {
     QTemporaryDir directory;
