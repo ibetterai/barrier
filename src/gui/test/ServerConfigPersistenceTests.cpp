@@ -210,14 +210,15 @@ TEST(ServerConfigPersistenceTests,
 }
 
 TEST(ServerConfigPersistenceTests,
-     configuredOfflineClientReceivesGeometryWhenProfileIsSaved)
+     configuredOfflineClientsReceiveNonoverlappingGeometryWhenProfileIsSaved)
 {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     const QString settingsPath = directory.filePath("barrier.ini");
 
     QSettings settings(settingsPath, QSettings::IniFormat);
-    writeConfiguredScreens(settings, {"server", "offline-client"});
+    writeConfiguredScreens(
+        settings, {"server", "offline-client", "positioned-offline-client"});
     ServerConfig liveConfig(&settings, 5, 3, nullptr);
     ServerConfig editedConfig(liveConfig);
 
@@ -227,6 +228,8 @@ TEST(ServerConfigPersistenceTests,
     };
     topology = topology.normalized();
     editedConfig.setCurrentTopology(topology, "server");
+    editedConfig.setFreeformPosition(
+        "positioned-offline-client", 1940, 0);
 
     QString error;
     ASSERT_TRUE(editedConfig.saveCurrentTopologyProfile(&error))
@@ -242,10 +245,19 @@ TEST(ServerConfigPersistenceTests,
 
     const barrier::TopologyProfile& saved =
         relaunchedConfig.topologyProfiles().at(topology.profileKey());
-    EXPECT_EQ(1u, saved.positions.count("offline-client"));
-    ASSERT_EQ(1u, saved.displayRects.count("offline-client"));
-    EXPECT_EQ(QList<QRect>({QRect(0, 0, 1920, 1080)}),
-              saved.displayRects.at("offline-client"));
+    ASSERT_EQ(3u, saved.positions.size());
+    ASSERT_EQ(3u, saved.displayRects.size());
+    const std::pair<int, int>& offlinePosition =
+        saved.positions.at("offline-client");
+    const std::pair<int, int>& positionedOfflinePosition =
+        saved.positions.at("positioned-offline-client");
+    const QRect offlineBounds =
+        saved.displayRects.at("offline-client").first().translated(
+            offlinePosition.first, offlinePosition.second);
+    const QRect positionedOfflineBounds =
+        saved.displayRects.at("positioned-offline-client").first().translated(
+            positionedOfflinePosition.first, positionedOfflinePosition.second);
+    EXPECT_FALSE(offlineBounds.intersects(positionedOfflineBounds));
 }
 
 TEST(ServerConfigPersistenceTests,

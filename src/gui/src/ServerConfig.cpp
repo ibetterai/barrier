@@ -274,22 +274,10 @@ bool ServerConfig::saveCurrentTopologyProfile(QString* error)
                 rect.translated(position.first, position.second));
         }
     };
-    for (const QString& screenName : configuredScreens) {
-        barrier::FreeformPositions::const_iterator position =
-            profile.positions.find(screenName);
-        barrier::FreeformDisplayRects::const_iterator displayRects =
-            profile.displayRects.find(screenName);
-        if (position != profile.positions.end() &&
-            displayRects != profile.displayRects.end() &&
-            !displayRects->second.isEmpty()) {
-            includeGeometry(position->second, displayRects->second);
-        }
-    }
 
     // A configured client can be added while it is offline, so no runtime
     // display metadata exists for it yet. Give it the same placeholder used
-    // by the freeform editor and place it beside the known layout. This keeps
-    // the profile complete until the client connects and reports real bounds.
+    // by the freeform editor until the client reports real bounds.
     for (const QString& screenName : configuredScreens) {
         barrier::FreeformDisplayRects::iterator displayRects =
             profile.displayRects.find(screenName);
@@ -298,20 +286,32 @@ bool ServerConfig::saveCurrentTopologyProfile(QString* error)
             profile.displayRects[screenName] = {
                 QRect(0, 0, 1920, 1080)
             };
-            displayRects = profile.displayRects.find(screenName);
         }
+    }
 
-        barrier::FreeformPositions::iterator position =
+    // Reserve every saved position before placing screens without one. This
+    // prevents a new fallback from overlapping placeholder geometry at a
+    // position retained from legacy settings.
+    for (const QString& screenName : configuredScreens) {
+        barrier::FreeformPositions::const_iterator position =
             profile.positions.find(screenName);
-        if (position == profile.positions.end()) {
-            const int x = occupiedBounds.isEmpty()
-                ? 0
-                : occupiedBounds.x() + occupiedBounds.width() + 20;
-            const int y = occupiedBounds.isEmpty() ? 0 : occupiedBounds.y();
-            profile.positions[screenName] = std::make_pair(x, y);
-            position = profile.positions.find(screenName);
+        if (position != profile.positions.end()) {
+            includeGeometry(
+                position->second, profile.displayRects.at(screenName));
         }
-        includeGeometry(position->second, displayRects->second);
+    }
+
+    for (const QString& screenName : configuredScreens) {
+        if (profile.positions.count(screenName) != 0) {
+            continue;
+        }
+        const int x = occupiedBounds.isEmpty()
+            ? 0
+            : occupiedBounds.x() + occupiedBounds.width() + 20;
+        const int y = occupiedBounds.isEmpty() ? 0 : occupiedBounds.y();
+        const std::pair<int, int> position = std::make_pair(x, y);
+        profile.positions[screenName] = position;
+        includeGeometry(position, profile.displayRects.at(screenName));
     }
 
     if (!barrier::restrictTopologyProfileToScreens(
