@@ -21,6 +21,9 @@ Bug fixes
 - Normalized bundled runpaths before the release audit so the public disk image builds:
   source-built Qt frameworks carry trailing-slash runpaths and the linker leaks the
   absolute dependency-prefix lib dir. No product code changes.
+- Added table-driven release-recipe verification that binds each product tag
+  to exact source and automation workflow fingerprints, rechecking protected
+  `main` CI before any release artifact is uploaded.
 
 Barrier `3.4.6` ( `2026-09-03` )
 ================================
