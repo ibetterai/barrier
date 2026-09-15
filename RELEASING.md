@@ -18,55 +18,76 @@ Update `doc/release_notes/index.md` and `README.md` as needed. Open a pull
 request, run all required checks, review the exact head commit, and merge it
 before building the public artifact.
 
-## 2. Build the audited app
+## 2. Create immutable release tags
 
-Run the `release-macos-arm64` workflow from the final, green `main` commit. The
-workflow builds checksum-pinned Qt and OpenSSL sources for the declared minimum
-macOS version, runs the test suites, audits every bundled Mach-O file, and
-uploads an unsigned app archive.
-
-The workflow output is an input to signing, not a public release asset. Do not
-publish the unsigned archive.
-
-## 3. Sign, notarize, and package
-
-On a trusted signing host:
-
-1. Sign the app from the inside out with a Developer ID Application identity.
-2. Submit the signed app to Apple's notary service and wait for acceptance.
-3. Staple the accepted ticket to the app.
-4. Create a disk image containing `Barrier.app` and an `Applications` link.
-5. Sign, notarize, and staple the disk image.
-
-Keep certificate names, keychain profiles, credentials, and local filesystem
-paths out of release notes and public logs.
-
-Verify the final app and disk image before uploading them:
-
-```sh
-codesign --verify --deep --strict --verbose=2 Barrier.app
-spctl --assess --type execute --verbose=2 Barrier.app
-xcrun stapler validate Barrier.app
-hdiutil verify Barrier-X.Y.Z-release-arm64.dmg
-codesign --verify --verbose=2 Barrier-X.Y.Z-release-arm64.dmg
-xcrun stapler validate Barrier-X.Y.Z-release-arm64.dmg
-shasum -a 256 Barrier-X.Y.Z-release-arm64.dmg
-```
-
-Mount the disk image and run `scripts/verify-macos-deployment-target.sh` against
-the mounted app. Confirm that the mounted app's version and embedded commit
-identify the final `main` commit. Install and launch that exact app on Apple
-Silicon running the declared minimum macOS version before publication.
-
-## 4. Create the signed tag
-
-Create a signed, annotated tag at the exact release commit and push only that
-tag:
+After the release change reaches `main`, wait for successful `ci.yml` and
+`public-audit.yml` push runs. Create signed product and automation tags at that
+exact commit:
 
 ```sh
 git tag -s vX.Y.Z -m vX.Y.Z RELEASE_COMMIT
-git push origin vX.Y.Z
+git tag -s vX.Y.Z-automation.1 -m vX.Y.Z-automation.1 RELEASE_COMMIT
+git push origin vX.Y.Z vX.Y.Z-automation.1
 ```
+
+The release workflow and recipe verifier must already pin that automation tag,
+the reviewed version-file hash, and the exact source/automation workflow
+fingerprints.
+
+## 3. Build the audited app
+
+Dispatch `release-macos-arm64` from the protected automation tag with the
+product tag as its input. The workflow builds checksum-pinned Qt and OpenSSL
+sources for the declared minimum macOS version, runs the test suites, audits
+every bundled Mach-O file, and uploads an unsigned app archive.
+
+The workflow output is an input to signing, not a public release asset. Download
+it to a trusted signing host and record its SHA-256 digest.
+
+## 4. Sign, notarize, and package without intervention
+
+The trusted signing host requires:
+
+- exactly one valid Developer ID Application identity;
+- a validated `notarytool` Data Protection Keychain profile named
+  `notarytool`, accessible to commands run by Terminal.app; and
+- macOS Automation permission for the invoking agent application to control
+  Terminal.app.
+
+Run one command:
+
+```sh
+scripts/notarize-macos-release.sh \
+  --archive /absolute/path/Barrier-vX.Y.Z-macos-arm64-unsigned-SHA.zip \
+  --archive-sha256 UNSIGNED_ARCHIVE_SHA256 \
+  --version X.Y.Z \
+  --revision RELEASE_COMMIT_FIRST_8_HEX \
+  --output-root /absolute/path/to/new-release-output
+```
+
+The launcher validates every argument and the unsigned archive digest, creates
+a unique mode-0700 bridge, and uses an argument-safe Apple Event to run its
+temporary worker inside the already-authorized Terminal.app context. The
+bridge contains validated release metadata only—never a certificate, API key,
+password, or exported Keychain value. The launcher waits for completion and
+propagates worker failure, permission denial, or timeout.
+
+Inside the authorized Terminal context, the worker:
+
+1. discovers exactly one valid Developer ID Application identity;
+2. signs nested code from the inside out;
+3. notarizes and staples the application;
+4. creates and signs the disk image;
+5. notarizes and staples the disk image;
+6. mounts the disk image and verifies version, revision, architecture,
+   deployment target, signatures, tickets, Gatekeeper, distribution policy,
+   and protected-metadata rules; and
+7. writes the DMG checksum and returns it to the launcher.
+
+Existing output paths, missing credentials, ambiguous identities, invalid
+signatures, rejected notarization submissions, malformed status, and timeouts
+all fail closed. Keep certificate names, Keychain data, credentials, and local
+filesystem paths out of release notes and public logs.
 
 ## 5. Publish the GitHub release
 
@@ -78,12 +99,12 @@ Barrier-X.Y.Z-release-arm64.dmg
 ```
 
 Include the SHA-256 digest and state that the package is Developer ID signed,
-Apple notarized, and stapled. Privately audit the issue, pull request, tag, and
-draft-release text before publishing. Do not include internal hostnames,
+Apple notarized, and stapled. Privately audit the issue, pull request, tags,
+and draft-release text before publishing. Do not include internal hostnames,
 network addresses, local paths, signing identities, or build-system inventory,
 and never print a matched protected value into a public log.
 
 Download the draft asset to a fresh location and repeat the digest, signature,
-Gatekeeper, notarization-ticket, disk-image, mounted-app, privacy, and minimum-OS
-launch checks. Publish the release only after the downloaded asset passes every
-check.
+Gatekeeper, notarization-ticket, disk-image, mounted-app, privacy, and
+minimum-OS checks. Publish the release only after the downloaded asset passes
+every check.
