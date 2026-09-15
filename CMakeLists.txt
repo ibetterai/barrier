@@ -522,6 +522,12 @@ if (APPLE AND BARRIER_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-macos-deployment-target.sh"
     )
 
+    add_test (
+        NAME macos_notarization_launcher
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/notarize-macos-release_test.sh"
+    )
+
     if (BARRIER_MACOS_RELEASE_AUDIT)
         configure_file (
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/tests/macos-file-prefix-map-generated.cpp.in"
