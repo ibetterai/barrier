@@ -65,12 +65,13 @@ scripts/notarize-macos-release.sh \
   --output-root /absolute/path/to/new-release-output
 ```
 
-The launcher validates every argument and the unsigned archive digest, creates
-a unique mode-0700 bridge, and uses an argument-safe Apple Event to run its
-temporary worker inside the already-authorized Terminal.app context. The
-bridge contains validated release metadata only—never a certificate, API key,
-password, or exported Keychain value. The launcher waits for completion and
-propagates worker failure, permission denial, or timeout.
+The launcher validates every argument and the unsigned archive digest, copies
+that archive into a unique mode-0700 bridge, and uses an argument-safe Apple
+Event to run its temporary worker inside the already-authorized Terminal.app
+context. The worker copies and rehashes that private input before extraction,
+closing the external-path replacement window. The bridge never contains a
+certificate, API key, password, or exported Keychain value. The launcher waits
+for completion and propagates worker failure, permission denial, or timeout.
 
 Inside the authorized Terminal context, the worker:
 

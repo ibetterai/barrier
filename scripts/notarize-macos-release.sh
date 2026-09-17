@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2129
 set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 usage() {
     cat >&2 <<'EOF'
@@ -100,8 +101,8 @@ run_worker() {
     }
     trap worker_error ERR HUP INT TERM
     worker_active=1
-    status_write RUNNING
     /usr/bin/printf '%s\n' "$$" > "$pid_file"
+    status_write RUNNING
 
     exec 3<"$request_file"
     IFS= read -r -d '' archive <&3 \
@@ -122,7 +123,7 @@ run_worker() {
     umask 077
     stage=initializing
 
-    /bin/mkdir "$output_root"
+    /bin/mkdir -m 700 "$output_root"
     stage_file="$output_root/release.stage"
     sign_log="$output_root/sign.log"
     app="$output_root/Barrier.app"
@@ -134,6 +135,7 @@ run_worker() {
     dmg_result="$output_root/dmg-notary-result.json"
     dmg_log="$output_root/dmg-notary-log.json"
     checksum="$output_root/Barrier-$version-release-arm64.dmg.sha256"
+    worker_archive="$output_root/unsigned-release-input.zip"
     : > "$sign_log"
 
     set_stage() {
@@ -142,6 +144,11 @@ run_worker() {
     }
 
     set_stage extracting
+    /usr/bin/ditto "$archive" "$worker_archive"
+    worker_archive_sha=$(/usr/bin/shasum -a 256 "$worker_archive" \
+        | /usr/bin/awk '{print $1}')
+    test "$worker_archive_sha" = "$archive_sha256"
+    archive=$worker_archive
     /usr/bin/ditto -x -k "$archive" "$output_root"
     test -d "$app/Contents"
     plist="$app/Contents/Info.plist"
@@ -340,13 +347,20 @@ test -f "$metadata_scanner" && test -f "$deployment_verifier" \
 bridge=$(/usr/bin/mktemp -d \
     "${TMPDIR:-/tmp}/barrier-notary-bridge.XXXXXX")
 /bin/chmod 700 "$bridge"
+staged_archive="$bridge/unsigned-release-input.zip"
+/usr/bin/ditto "$archive" "$staged_archive"
+/bin/chmod 600 "$staged_archive"
+staged_archive_sha=$(/usr/bin/shasum -a 256 "$staged_archive" \
+    | /usr/bin/awk '{print $1}')
+test "$staged_archive_sha" = "$archive_sha256" \
+    || fail 'private release archive copy does not match'
 request_file="$bridge/request"
 status_file="$bridge/status"
 pid_file="$bridge/pid"
 command_file="$bridge/notarize.command"
 automation_file="$bridge/dispatch.scpt"
 /usr/bin/printf '%s\0%s\0%s\0%s\0%s\0%s\0' \
-    "$archive" "$archive_sha256" "$version" "$revision" \
+    "$staged_archive" "$archive_sha256" "$version" "$revision" \
     "$output_root" "$timeout_seconds" > "$request_file"
 /bin/chmod 600 "$request_file"
 printf '#!/bin/bash\nexec /bin/bash %q --worker %q\n' \
@@ -375,19 +389,48 @@ case "$test_mode" in
     *) fail 'invalid notarization test mode' 2 ;;
 esac
 
-"$dispatcher" "$automation_file" "$command_file" >/dev/null
 start_seconds=$SECONDS
+dispatcher_pid=
+terminate_worker() {
+    if test -f "$pid_file"; then
+        worker_pid=$(/bin/cat "$pid_file")
+        case "$worker_pid" in
+            ''|*[!0-9]*) ;;
+            *) /bin/kill -TERM "$worker_pid" >/dev/null 2>&1 || true ;;
+        esac
+    fi
+}
+timeout_release() {
+    timeout_stage=$1
+    if test -n "$dispatcher_pid"; then
+        /bin/kill -TERM "$dispatcher_pid" >/dev/null 2>&1 || true
+        wait "$dispatcher_pid" >/dev/null 2>&1 || true
+    fi
+    terminate_worker
+    fail "$timeout_stage timed out; bridge retained at $bridge" 124
+}
+
+"$dispatcher" "$automation_file" "$command_file" >/dev/null &
+dispatcher_pid=$!
+while /bin/kill -0 "$dispatcher_pid" >/dev/null 2>&1; do
+    elapsed=$((SECONDS - start_seconds))
+    if test "$elapsed" -ge "$timeout_seconds"; then
+        timeout_release 'Terminal automation dispatch'
+    fi
+    /bin/sleep 1
+done
+set +e
+wait "$dispatcher_pid"
+dispatcher_status=$?
+set -e
+dispatcher_pid=
+test "$dispatcher_status" -eq 0 \
+    || fail "Terminal automation dispatch failed; bridge retained at $bridge"
+
 while test ! -f "$status_file"; do
     elapsed=$((SECONDS - start_seconds))
     if test "$elapsed" -ge "$timeout_seconds"; then
-        if test -f "$pid_file"; then
-            worker_pid=$(/bin/cat "$pid_file")
-            case "$worker_pid" in
-                ''|*[!0-9]*) ;;
-                *) /bin/kill -TERM "$worker_pid" >/dev/null 2>&1 || true ;;
-            esac
-        fi
-        fail "notarization worker timed out; bridge retained at $bridge" 124
+        timeout_release 'notarization worker'
     fi
     /bin/sleep 1
 done
@@ -398,14 +441,7 @@ case "$worker_status" in
         while test "$worker_status" = RUNNING; do
             elapsed=$((SECONDS - start_seconds))
             if test "$elapsed" -ge "$timeout_seconds"; then
-                if test -f "$pid_file"; then
-                    worker_pid=$(/bin/cat "$pid_file")
-                    case "$worker_pid" in
-                        ''|*[!0-9]*) ;;
-                        *) /bin/kill -TERM "$worker_pid" >/dev/null 2>&1 || true ;;
-                    esac
-                fi
-                fail "notarization worker timed out; bridge retained at $bridge" 124
+                timeout_release 'notarization worker'
             fi
             /bin/sleep 1
             worker_status=$(/bin/cat "$status_file")

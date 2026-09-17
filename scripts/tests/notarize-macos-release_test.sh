@@ -43,6 +43,9 @@ case "${FAKE_SCENARIO:-success}" in
         ;;
     timeout)
         ;;
+    dispatch-timeout)
+        /bin/sleep 10
+        ;;
     *)
         exit 2
         ;;
@@ -96,6 +99,16 @@ timeout_status=$?
 set -e
 test "$timeout_status" -eq 124
 /usr/bin/grep -Fq 'timed out' "$test_root/timeout.stderr"
+
+set +e
+run_launcher dispatch-timeout "$test_root/dispatch-timeout-output" --timeout 1 \
+    >"$test_root/dispatch-timeout.stdout" \
+    2>"$test_root/dispatch-timeout.stderr"
+dispatch_timeout_status=$?
+set -e
+test "$dispatch_timeout_status" -eq 124
+/usr/bin/grep -Fq 'Terminal automation dispatch timed out' \
+    "$test_root/dispatch-timeout.stderr"
 
 expect_rejection() {
     name=$1
