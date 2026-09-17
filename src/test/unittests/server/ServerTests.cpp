@@ -56,6 +56,9 @@ public:
     static bool dispatchTopologyTimer(Server& server);
     static std::int64_t monotonicMs();
     static std::string activeName(const Server& server);
+    static BaseClientProxy* mapToNeighbor(
+        Server& server, BaseClientProxy* source, EDirection direction,
+        SInt32& x, SInt32& y);
     static std::string rightEdgeDisconnectedTarget(Server& server);
     static void restorePrimaryForCleanup(Server& server);
 };
@@ -172,6 +175,14 @@ std::string
 ServerTopologyTestAccess::activeName(const Server& server)
 {
     return server.m_active->getName();
+}
+
+BaseClientProxy*
+ServerTopologyTestAccess::mapToNeighbor(
+    Server& server, BaseClientProxy* source, EDirection direction,
+    SInt32& x, SInt32& y)
+{
+    return server.mapToNeighbor(source, direction, x, y);
 }
 
 std::string
@@ -402,6 +413,75 @@ TEST(ServerTests, TopologyKnownProfileEnablesEdgeTransition)
     ServerTopologyTestAccess::movePrimaryToRightEdge(*harness.server);
     EXPECT_EQ("client", ServerTopologyTestAccess::activeName(*harness.server));
     EXPECT_EQ(1, client->enterCount);
+}
+
+TEST(ServerTests, ClientTopEdgeLandsOnBottomOfAdjacentServerDisplay)
+{
+    ServerHarness harness;
+    TestClientProxy* client = harness.connectClient();
+    client->displays = {{0, 0, 100, 100}};
+
+    ON_CALL(harness.primary, getShape(_, _, _, _))
+        .WillByDefault(Invoke([](SInt32& x, SInt32& y,
+                                 SInt32& w, SInt32& h) {
+            x = 0;
+            y = 0;
+            w = 300;
+            h = 200;
+        }));
+    ON_CALL(harness.primary, getDisplays(_))
+        .WillByDefault(Invoke([](std::vector<ScreenRect>& displays) {
+            displays = {{0, 0, 100, 100},
+                        {100, 0, 100, 200},
+                        {200, 0, 100, 100}};
+        }));
+
+    ASSERT_TRUE(harness.config.connect(
+        "client", kTop, 0.0f, 1.0f,
+        "server", 0.0f, 1.0f / 3.0f));
+
+    SInt32 x = 50;
+    SInt32 y = -1;
+    BaseClientProxy* destination = ServerTopologyTestAccess::mapToNeighbor(
+        *harness.server, client, kTop, x, y);
+
+    ASSERT_EQ(&harness.primary, destination);
+    EXPECT_EQ(50, x);
+    EXPECT_EQ(99, y);
+}
+
+TEST(ServerTests, ClientBottomEdgeLandsOnTopOfAdjacentServerDisplay)
+{
+    ServerHarness harness;
+    TestClientProxy* client = harness.connectClient();
+    client->displays = {{0, 0, 100, 100}};
+
+    ON_CALL(harness.primary, getShape(_, _, _, _))
+        .WillByDefault(Invoke([](SInt32& x, SInt32& y,
+                                 SInt32& w, SInt32& h) {
+            x = 0;
+            y = 0;
+            w = 200;
+            h = 200;
+        }));
+    ON_CALL(harness.primary, getDisplays(_))
+        .WillByDefault(Invoke([](std::vector<ScreenRect>& displays) {
+            displays = {{0, 100, 100, 100},
+                        {100, 0, 100, 200}};
+        }));
+
+    ASSERT_TRUE(harness.config.connect(
+        "client", kBottom, 0.0f, 1.0f,
+        "server", 0.0f, 0.5f));
+
+    SInt32 x = 50;
+    SInt32 y = 100;
+    BaseClientProxy* destination = ServerTopologyTestAccess::mapToNeighbor(
+        *harness.server, client, kBottom, x, y);
+
+    ASSERT_EQ(&harness.primary, destination);
+    EXPECT_EQ(50, x);
+    EXPECT_EQ(100, y);
 }
 
 TEST(ServerTests, DisconnectedNeighborIsReportedForNetworkWake)
