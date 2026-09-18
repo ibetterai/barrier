@@ -988,9 +988,9 @@ Server::mapToNeighbor(BaseClientProxy* src,
 		}
 		assert(lastGoodScreen != NULL);
 		y += dy;
-		// for an L-shaped screen, the top edge is not a single straight
-		// line.  adjust y to the top of the display that actually contains x
-		// so the cursor lands on the correct monitor instead of the gap.
+		// For an L-shaped destination, the bottom edge is stepped. A
+		// source leaving through its top edge enters the bottom of the
+		// display whose horizontal span contains x.
 		{
 			std::vector<ScreenRect> rects;
 			lastGoodScreen->getDisplays(rects);
@@ -998,7 +998,7 @@ Server::mapToNeighbor(BaseClientProxy* src,
 				for (std::vector<ScreenRect>::const_iterator i = rects.begin();
 						i != rects.end(); ++i) {
 					if (x >= i->x && x < i->x + i->w) {
-						y = i->y;
+						y = i->y + i->h - 1;
 						break;
 					}
 				}
