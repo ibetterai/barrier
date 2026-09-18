@@ -50,6 +50,14 @@ RECIPES = {
         "automation_workflow_sha256":
             "40cc4b5cda3542d9d7965853690f6eebf6ba6e0182f62590e7172450d60468dd",
     },
+    # v3.4.9 carries the multi-display physical-edge crossing correction, and
+    # its tag tree and automation tree share one reviewed workflow file.
+    "v3.4.9": {
+        "source_workflow_sha256":
+            "5ee06b99309d980fd223a48fa8ef1ae245f675d206f23862f94d532cf1f3dceb",
+        "automation_workflow_sha256":
+            "5ee06b99309d980fd223a48fa8ef1ae245f675d206f23862f94d532cf1f3dceb",
+    },
 }
 MAX_WORKFLOW_BYTES = 128 * 1024
 
