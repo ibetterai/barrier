@@ -5,15 +5,14 @@ Silicon fork. Historical entries were reconstructed from audited source
 snapshots and release documentation; see
 [source provenance](docs/history/source-provenance.md).
 
+## 3.4.9 — 2026-09-17
 
 ### Bug fixes
 
-- Used the current effective local screen name for server validation and
-  topology selection, so changing a Mac's Barrier name no longer traps the
-  server in a repeated “Please add the server” configuration loop.
-- Rechecked sticky event-queue readiness while waiting, preventing a missed
-  condition notification from causing a false startup timeout on newer macOS
-  versions.
+- Fixed pointer crossings into a multi-display server so entering through a
+  client's top or bottom edge lands on the physically adjacent server display
+  edge instead of the aggregate screen edge.
+
 ## 3.4.8 — 2026-09-14
 
 ### Bug fixes

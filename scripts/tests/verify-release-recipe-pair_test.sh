@@ -124,20 +124,41 @@ fi
     --source-workflow "$source_workflow_347" \
     --automation-workflow "$automation_workflow_347" >/dev/null
 
-# v3.4.8 has no tag yet, so both fixtures are the working tree file. The
-# product and automation tags will carry byte-identical content.
+source_workflow_348="$test_root/source-348.yml"
+if ! git -C "$repo_root" show \
+    v3.4.8:.github/workflows/release-macos-arm64.yml \
+    > "$source_workflow_348"; then
+    echo 'unable to prepare v3.4.8 tagged release workflow fixture' >&2
+    exit 1
+fi
+
+automation_workflow_348="$test_root/automation-348.yml"
+if ! git -C "$repo_root" show \
+    v3.4.8-automation.1:.github/workflows/release-macos-arm64.yml \
+    > "$automation_workflow_348"; then
+    echo 'unable to prepare v3.4.8 automation workflow fixture' >&2
+    exit 1
+fi
+
 /usr/bin/python3 "$verifier" \
     --release-tag v3.4.8 \
+    --source-workflow "$source_workflow_348" \
+    --automation-workflow "$automation_workflow_348" >/dev/null
+
+# v3.4.9 has no tag yet, so both fixtures are the working tree file. The
+# product and automation tags will carry byte-identical content.
+/usr/bin/python3 "$verifier" \
+    --release-tag v3.4.9 \
     --source-workflow "$automation_workflow" \
     --automation-workflow "$automation_workflow" >/dev/null
 
-mutated_automation_348="$test_root/mutated-automation-348.yml"
-/bin/cp "$automation_workflow" "$mutated_automation_348"
-printf '\n# unknown automation field\n' >> "$mutated_automation_348"
+mutated_automation_349="$test_root/mutated-automation-349.yml"
+/bin/cp "$automation_workflow" "$mutated_automation_349"
+printf '\n# unknown automation field\n' >> "$mutated_automation_349"
 if /usr/bin/python3 "$verifier" \
-    --release-tag v3.4.8 \
+    --release-tag v3.4.9 \
     --source-workflow "$automation_workflow" \
-    --automation-workflow "$mutated_automation_348" >/dev/null 2>&1; then
+    --automation-workflow "$mutated_automation_349" >/dev/null 2>&1; then
     echo 'release-recipe verifier accepted automation workflow drift' >&2
     exit 1
 fi

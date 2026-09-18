@@ -2,6 +2,14 @@ Release notes
 =============
 
 [comment]: <> (towncrier release notes start)
+Barrier `3.4.9` ( `2026-09-17` )
+================================
+
+Bug fixes
+---------
+
+- Fixed pointer crossings into a multi-display server so entering through a client's top or bottom edge lands on the physically adjacent server display edge instead of the aggregate screen edge.
+
 Barrier `3.4.8` ( `2026-09-14` )
 ================================
 

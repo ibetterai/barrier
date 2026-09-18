@@ -41,6 +41,7 @@ IDs describe product behavior; they are not links to legacy tracker objects.
 | H-034 | 2026-09-03 | Fix | Forwarded Spotlight, Dictation, and Do Not Disturb keys (codes 177, 176, 178) as their own keys | Shipped | 3.4.5 |
 | H-035 | 2026-09-03 | Fix | Replayed SecondaryFn flag on synthesized function-row keys | Shipped | 3.4.6 |
 | H-036 | 2026-09-03 | Fix | Normalized bundled runpaths before the release audit (unblocks public dmg) | Shipped | 3.4.7 |
+| H-037 | 2026-09-17 | Fix | Mapped client crossings to the physically adjacent edge of a multi-display server | Shipped | 3.4.9 |
 
 Upstream history before this fork is retained in the source-tree changelogs and
 release notes.
